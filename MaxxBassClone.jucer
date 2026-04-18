@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<JUCERPROJECT id="MaxxBassClone" name="MaxxBassClone" projectType="audioplug"
+              version="1.0.0" companyName="Dev" bundleIdentifier="com.dev.maxxbassclone"
+              pluginName="MaxxBassClone" pluginDesc="Psychoacoustic Bass Enhancer"
+              pluginManufacturerCode="Manu" pluginCode="Mbcl" pluginFormats="buildVST"
+              pluginCharacteristicsValue="pluginWantsMidiIn" jucerFormatVersion="1">
+  <MAINGROUP id="MaxxBassClone" name="MaxxBassClone">
+    <GROUP id="Source" name="Source">
+      <FILE id="pprc1" name="PluginProcessor.cpp" compile="1" resource="0"
+            file="Source/PluginProcessor.cpp"/>
+      <FILE id="pphr1" name="PluginProcessor.h" compile="0" resource="0"
+            file="Source/PluginProcessor.h"/>
+      <FILE id="perc1" name="PluginEditor.cpp" compile="1" resource="0" file="Source/PluginEditor.cpp"/>
+      <FILE id="pehr1" name="PluginEditor.h" compile="0" resource="0" file="Source/PluginEditor.h"/>
+      <FILE id="hybcpp" name="HybridEngine.cpp" compile="1" file="Source/HybridEngine.cpp"/>
+      <FILE id="hybh" name="HybridEngine.h" compile="0" file="Source/HybridEngine.h"/>
+      <FILE id="simcpp" name="SimpleEngine.cpp" compile="1" file="Source/SimpleEngine.cpp"/>
+      <FILE id="simh" name="SimpleEngine.h" compile="0" file="Source/SimpleEngine.h"/>
+      <FILE id="dsp" name="DspStructs.h" compile="0" file="Source/DspStructs.h"/>
+      <FILE id="advph" name="AdvancedParams.h" compile="0" resource="0" file="Source/AdvancedParams.h"/>
+      <FILE id="advpcpp" name="AdvancedPanel.cpp" compile="1" resource="0"
+            file="Source/AdvancedPanel.cpp"/>
+      <FILE id="advph2" name="AdvancedPanel.h" compile="0" resource="0" file="Source/AdvancedPanel.h"/>
+      <FILE id="advdefs" name="AdvPanelDefs.h" compile="0" file="Source/AdvPanelDefs.h"/>
+    </GROUP>
+  </MAINGROUP>
+  <EXPORTFORMATS>
+    <VS2026 targetFolder="Builds/VisualStudio2026">
+      <CONFIGURATIONS>
+        <CONFIGURATION isDebug="0" name="Release"/>
+      </CONFIGURATIONS>
+      <MODULEPATHS>
+        <MODULEPATH id="juce_audio_basics" path="../../juce"/>
+        <MODULEPATH id="juce_audio_devices" path="../../juce"/>
+        <MODULEPATH id="juce_audio_formats" path="../../juce"/>
+        <MODULEPATH id="juce_audio_plugin_client" path="../../juce"/>
+        <MODULEPATH id="juce_audio_processors" path="../../juce"/>
+        <MODULEPATH id="juce_audio_processors_headless" path="../../juce"/>
+        <MODULEPATH id="juce_audio_utils" path="../../juce"/>
+        <MODULEPATH id="juce_core" path="../../juce"/>
+        <MODULEPATH id="juce_data_structures" path="../../juce"/>
+        <MODULEPATH id="juce_dsp" path="../../juce"/>
+        <MODULEPATH id="juce_events" path="../../juce"/>
+        <MODULEPATH id="juce_graphics" path="../../juce"/>
+        <MODULEPATH id="juce_gui_basics" path="../../juce"/>
+        <MODULEPATH id="juce_gui_extra" path="../../juce"/>
+      </MODULEPATHS>
+    </VS2026>
+  </EXPORTFORMATS>
+  <MODULES>
+    <MODULE id="juce_audio_basics" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
+    <MODULE id="juce_audio_devices" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
+    <MODULE id="juce_audio_formats" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
+    <MODULE id="juce_audio_plugin_client" showAllCode="1" useLocalCopy="0"
+            useGlobalPath="1"/>
+    <MODULE id="juce_audio_processors" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
+    <MODULE id="juce_audio_processors_headless" showAllCode="1" useLocalCopy="0"
+            useGlobalPath="1"/>
+    <MODULE id="juce_audio_utils" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
+    <MODULE id="juce_core" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
+    <MODULE id="juce_data_structures" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
+    <MODULE id="juce_dsp" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
+    <MODULE id="juce_events" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
+    <MODULE id="juce_graphics" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
+    <MODULE id="juce_gui_basics" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
+    <MODULE id="juce_gui_extra" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
+  </MODULES>
+  <JUCEOPTIONS JUCE_STRICT_REFCOUNTEDPOINTER="1" JUCE_PLUGINHOST_VST="1" JUCE_PLUGINHOST_VST3="0"
+               JUCE_VST3_CAN_REPLACE_VST2="0"/>
+</JUCERPROJECT>
