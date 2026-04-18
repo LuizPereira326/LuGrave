@@ -37,6 +37,8 @@ static void syncAdvancedParamsFromApvts (juce::AudioProcessorValueTreeState& apv
     SYNC_ADV(SKD_RELEASE_MS)     SYNC_ADV(SP_HPF_BASE_CUT)     SYNC_ADV(SP_SUB_LPF_FREQ)     SYNC_ADV(SP_BODY_LPF_FREQ)
     SYNC_ADV(SP_SUB_ENV_ATT_MS)     SYNC_ADV(SP_SUB_ENV_REL_MS)     SYNC_ADV(SP_BODY_ENV_ATT_MS)     SYNC_ADV(SP_BODY_ENV_REL_MS)
     SYNC_ADV(SP_TARGET_CUT_MIN)     SYNC_ADV(SP_TARGET_CUT_MAX)     SYNC_ADV(SP_DECIMATE_FACTOR)
+    SYNC_ADV(SP_CUTOFF_SMOOTH_MS)   SYNC_ADV(SP_MUSIC_LIFT_MAX)   SYNC_ADV(SP_PRESSURE_LIFT_MAX)  SYNC_ADV(SP_HARD_LIFT_MAX)
+    SYNC_ADV(SP_DRIVE_LIFT_MAX)     SYNC_ADV(SP_MIX_LIFT_MAX)     SYNC_ADV(SP_GAIN_LIFT_MAX)
 
     #undef SYNC_ADV
 }
@@ -217,6 +219,15 @@ MaxxBassAudioProcessor::createParameterLayout()
     addAdvancedFloat ("SP_TARGET_CUT_MIN", 30.0f, 100.0f, 1.0f, defaults.SP_TARGET_CUT_MIN, "Hz");
     addAdvancedFloat ("SP_TARGET_CUT_MAX", 50.0f, 150.0f, 1.0f, defaults.SP_TARGET_CUT_MAX, "Hz");
     addAdvancedFloat ("SP_DECIMATE_FACTOR", 1.0f, 16.0f, 1.0f, defaults.SP_DECIMATE_FACTOR, "x");
+    
+    // MELHORIA v49: Parâmetros de suavização e lifts do Sub Cut
+    addAdvancedFloat ("SP_CUTOFF_SMOOTH_MS", 10.0f, 500.0f, 5.0f, defaults.SP_CUTOFF_SMOOTH_MS, "ms");
+    addAdvancedFloat ("SP_MUSIC_LIFT_MAX", 0.0f, 15.0f, 0.5f, defaults.SP_MUSIC_LIFT_MAX, "Hz");
+    addAdvancedFloat ("SP_PRESSURE_LIFT_MAX", 0.0f, 30.0f, 1.0f, defaults.SP_PRESSURE_LIFT_MAX, "Hz");
+    addAdvancedFloat ("SP_HARD_LIFT_MAX", 0.0f, 20.0f, 1.0f, defaults.SP_HARD_LIFT_MAX, "Hz");
+    addAdvancedFloat ("SP_DRIVE_LIFT_MAX", 0.0f, 10.0f, 0.5f, defaults.SP_DRIVE_LIFT_MAX, "Hz");
+    addAdvancedFloat ("SP_MIX_LIFT_MAX", 0.0f, 10.0f, 0.5f, defaults.SP_MIX_LIFT_MAX, "Hz");
+    addAdvancedFloat ("SP_GAIN_LIFT_MAX", 0.0f, 10.0f, 0.5f, defaults.SP_GAIN_LIFT_MAX, "Hz");
 
     return layout;
 }
@@ -242,6 +253,8 @@ void MaxxBassAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlo
 {
     currentSR = sampleRate;
     lastSubCutFreq = -1.0f;
+    smoothedTargetCut = -1.0f;  // MELHORIA v49: inicializa smooth
+    smoothCounter = 0;
     refreshAdvancedParamsFromAPVTS();
 
     for (int ch = 0; ch < 2; ++ch)
@@ -273,6 +286,8 @@ void MaxxBassAudioProcessor::releaseResources()
     simpleEngine.reset();
     hybridEngine.reset();
     lastSubCutFreq = -1.0f;
+    smoothedTargetCut = -1.0f;  // MELHORIA v49: reset smooth
+    smoothCounter = 0;
 
     for (int ch = 0; ch < 2; ++ch)
     {
@@ -322,6 +337,7 @@ void MaxxBassAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     const int numCh = juce::jmin (buffer.getNumChannels(), 2);
     const int N     = buffer.getNumSamples();
     const int decimate = juce::jmax (1, juce::roundToInt (audioParams.SP_DECIMATE_FACTOR));
+    const int samplesPerBlock = N;  // MELHORIA v49: usado para interpolação do cutoff
 
     for (int ch = 0; ch < numCh; ++ch)
     {
@@ -369,32 +385,62 @@ void MaxxBassAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     const float pressure     = smoothStep01 (juce::jlimit (0.0f, 1.0f, (subRatio - 0.48f) * 1.85f));
     const float aggressive   = smoothStep01 (juce::jlimit (0.0f, 1.0f, (subRatio - 0.98f) * 2.30f));
 
+    // MELHORIA v49: Usar parâmetros de lift reduzidos para manter adaptabilidade
+    // Antes: lifts hardcoded altos → cutoff sempre no teto
+    // Agora: lifts controlados por parâmetros ~40-50% menores → cutoff varia musicalmente
     const float baseCut     = juce::jmap (cutFreq, 20.0f, 300.0f,
                                           audioParams.SP_HPF_BASE_CUT,
                                           audioParams.SP_TARGET_CUT_MAX);
-    const float musicLift   = juce::jmap (balanceSweet, 0.0f, 1.0f, 0.0f, 6.5f);
-    const float pressureLift= juce::jmap (pressure,     0.0f, 1.0f, 0.0f, 15.0f);
-    const float hardLift    = juce::jmap (aggressive,   0.0f, 1.0f, 0.0f, 11.0f);
-    const float driveLift   = juce::jmap (drive,   1.0f, 16.0f, 0.0f, 4.5f);
-    const float mixLift     = juce::jmap (harmMix,  0.0f, 100.0f, 0.0f, 3.0f);
-    const float gainLift    = juce::jmap (outputDb, -18.0f, 12.0f, 0.0f, 2.0f);
+    const float musicLift   = juce::jmap (balanceSweet, 0.0f, 1.0f, 0.0f, audioParams.SP_MUSIC_LIFT_MAX);
+    const float pressureLift= juce::jmap (pressure,     0.0f, 1.0f, 0.0f, audioParams.SP_PRESSURE_LIFT_MAX);
+    const float hardLift    = juce::jmap (aggressive,   0.0f, 1.0f, 0.0f, audioParams.SP_HARD_LIFT_MAX);
+    const float driveLift   = juce::jmap (drive,   1.0f, 16.0f, 0.0f, audioParams.SP_DRIVE_LIFT_MAX);
+    const float mixLift     = juce::jmap (harmMix,  0.0f, 100.0f, 0.0f, audioParams.SP_MIX_LIFT_MAX);
+    const float gainLift    = juce::jmap (outputDb, -18.0f, 12.0f, 0.0f, audioParams.SP_GAIN_LIFT_MAX);
 
-    const float targetCut = juce::jlimit (audioParams.SP_TARGET_CUT_MIN,
-                                          audioParams.SP_TARGET_CUT_MAX,
-                                          baseCut + musicLift
-                                                 + pressureLift
-                                                 + hardLift
-                                                 + driveLift * 0.35f
-                                                 + mixLift   * 0.20f
-                                                 + gainLift  * 0.20f);
+    const float rawTargetCut = juce::jlimit (audioParams.SP_TARGET_CUT_MIN,
+                                             audioParams.SP_TARGET_CUT_MAX,
+                                             baseCut + musicLift
+                                                    + pressureLift
+                                                    + hardLift
+                                                    + driveLift * 0.35f
+                                                    + mixLift   * 0.20f
+                                                    + gainLift  * 0.20f);
 
-    if (std::abs (targetCut - lastSubCutFreq) > 2.0f)
+    // MELHORIA v49: Suavização do targetCut para evitar clicks/pop
+    // Interpolação linear ao longo de SP_CUTOFF_SMOOTH_MS
+    const int smoothTotalSamples = juce::roundToInt (audioParams.SP_CUTOFF_SMOOTH_MS * currentSR / 1000.0f);
+    
+    float finalTargetCut = rawTargetCut;
+    
+    if (smoothedTargetCut < 0.0f || smoothCounter >= smoothTotalSamples)
     {
-        lastSubCutFreq = targetCut;
+        // Primeiro bloco ou suavização completada
+        smoothedTargetCut = rawTargetCut;
+        smoothCounter = 0;
+    }
+    else
+    {
+        // Interpolação em andamento
+        const float increment = (rawTargetCut - smoothedTargetCut) / (float)(smoothTotalSamples - smoothCounter);
+        smoothedTargetCut += increment * (float)samplesPerBlock;
+        smoothCounter = juce::jmin (smoothCounter + samplesPerBlock, smoothTotalSamples);
+        
+        // Clamp para evitar overshoot
+        smoothedTargetCut = juce::jlimit (audioParams.SP_TARGET_CUT_MIN, 
+                                          audioParams.SP_TARGET_CUT_MAX, 
+                                          smoothedTargetCut);
+        finalTargetCut = smoothedTargetCut;
+    }
+
+    // Atualiza filtros apenas quando houver mudança significativa (> 0.5 Hz para precisão)
+    if (std::abs (finalTargetCut - lastSubCutFreq) > 0.5f)
+    {
+        lastSubCutFreq = finalTargetCut;
         for (int ch = 0; ch < numCh; ++ch)
         {
-            subProtectHPF [ch].setHighPass ((double) targetCut, currentSR);
-            subProtectHPF2[ch].setHighPass ((double) targetCut, currentSR);
+            subProtectHPF [ch].setHighPass ((double) finalTargetCut, currentSR);
+            subProtectHPF2[ch].setHighPass ((double) finalTargetCut, currentSR);
         }
     }
 

@@ -85,6 +85,10 @@ public:
     EnvFollower  subProtectBodyEnv [2];
 
     float lastSubCutFreq = -1.0f;
+    
+    // MELHORIA v49: Suavização do targetCut para evitar clicks/pop
+    float smoothedTargetCut = -1.0f;  // Valor atual interpolado
+    int   smoothCounter = 0;          // Contador para interpolação
 
 private:
     SimpleHarmonicEngine simpleEngine;
