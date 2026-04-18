@@ -1,0 +1,236 @@
+===============================================================================
+PROBLEMA E SOLUÇÃO DA BUZINA - Vinibass Plugin
+===============================================================================
+
+ÚLTIMA ATUALIZAÇÃO: v40
+
+===============================================================================
+HISTÓRICO DE PROBLEMAS E SOLUÇÕES
+===============================================================================
+
+-------------------------------------------------------------------------------
+v40 - CORREÇÃO DO CHIADO INTERMITENTE "SUGA O SOM"
+-------------------------------------------------------------------------------
+
+PROBLEMA NOVO:
+  Chiado INTERMITENTE que "suga o som" por alguns segundos
+  Diferente do chiado contínuo anterior
+
+CAUSA RAIZ:
+  1. IntentDetector com valores de harmGain MUITO baixos:
+     - voicedLocked: harmGain = 0.20 (queda de 80%!)
+     - rumbleLocked: harmGain = 0.10 (queda de 90%!)
+  
+  2. BUG CRÍTICO no SimpleEngine.cpp:
+     - harmGainVal era aplicado DUAS VEZES!
+     - Linha 405: h *= harmGainVal;
+     - Linha 519: h * harmGainVal * ...
+     - Resultado: se harmGainVal = 0.20, o ganho final era 0.04 (96% de redução!)
+
+  3. Smoothing muito rápido (10ms):
+     - Transições bruscas quando estados "locked" mudavam
+
+SINTOMAS:
+  - "De vez em quando tem um chiado que deixa o som fanhoso"
+  - "Parece que suga o som por alguns segundos"
+  - "Distorce todo o som"
+  - "Não é chiado contínuo"
+
+SOLUÇÃO:
+  1. IntentDetector - Aumentar harmGain mínimo:
+     - MIN_GAIN_VOICED: 0.20 → 0.75
+     - MIN_GAIN_RUMBLE: 0.10 → 0.70
+     - MIN_GAIN_NORMAL: 0.95 → 0.90
+  
+  2. IntentDetector - Aumentar smoothing:
+     - gainSmoothCoef: 10ms → 80ms
+  
+  3. SimpleEngine.cpp - Corrigir BUG da aplicação dupla:
+     - REMOVIDO: h *= harmGainVal; (linha 405)
+     - Agora harmGainVal é aplicado APENAS UMA VEZ no final
+  
+  4. SimpleEngine.cpp - Corrigir valores do modo legado:
+     - harmGainVal 0.15/0.25/0.30 → 0.80/0.85/0.90
+     - Adicionado clamp mínimo de 0.80
+
+ARQUIVOS MODIFICADOS:
+  - DspStructs.h: IntentDetector (constantes e smoothing)
+  - SimpleEngine.cpp: Removida aplicação dupla de harmGainVal
+  - HybridEngine.h: Documentação v40
+
+-------------------------------------------------------------------------------
+v38 - CORREÇÃO CRÍTICA: POLINÔMIOS CHEBYSHEV ERRADOS
+-------------------------------------------------------------------------------
+
+PROBLEMA:
+  Na v37, alguém alterou os COEFICIENTES dos polinômios Chebyshev:
+    - T2: 2.0 → 1.5 (ERRADO!)
+    - T4: 8.0 → 6.0 (ERRADO!)
+  
+  Isso QUEBRA a propriedade matemática fundamental do Chebyshev:
+    T_n(cos(θ)) = cos(nθ)  ← GERA HARMÔNICA PURA
+  
+  Com coeficientes errados:
+    1.5cos²(θ) ≠ cos(2θ)  ← GERA FREQUÊNCIAS ESPÚRIAS!
+    6cos⁴(θ) - 6cos²(θ) ≠ cos(4θ)  ← GERA FREQUÊNCIAS ESPÚRIAS!
+  
+  RESULTADO: vazamento da fundamental + intermodulação = CHIADO/DISTORÇÃO
+
+SINTOMAS:
+  - "Chiado de grave" com drive aplicado
+  - Distorção persistente mesmo com drive baixo
+  - Som "sujo" ou "areia" no grave
+  - Buzina/chiado que não desaparece completamente
+
+SOLUÇÃO:
+  1. RESTAURAR polinômios Chebyshev CORRETOS:
+     - T2(x) = 2.0 * x²          (era 1.5)
+     - T4(x) = 8.0 * x²(x² - 1)  (era 6.0)
+  
+  2. Usar OUTPUT SCALE para reduzir intensidade:
+     - T2: outputScale = 0.50
+     - T3: outputScale = 0.12
+     - T4: outputScale = 0.08
+     - T5: outputScale = 0.06
+  
+  3. REDUZIR pesos harmônicos:
+     - HE_H2_BASE: 1.10 → 0.85
+     - HE_H3_BASE: 0.85 → 0.60
+     - HE_H4_BASE: 0.55 → 0.35
+     - HE_H5_BASE: 0.35 → 0.20
+  
+  4. Drive scale conservador: 0.40 (era 0.55)
+
+LIÇÃO APRENDIDA:
+  NUNCA alterar os COEFICIENTES dos polinômios Chebyshev!
+  Para reduzir intensidade, usar:
+    - outputScale (aplicado DEPOIS do polinômio)
+    - Pesos harmônicos
+    - Drive scale
+    - Clamp de saída
+
+-------------------------------------------------------------------------------
+v36 - CORREÇÃO DE DYNAMICS + PUMPING + DISTORÇÃO
+-------------------------------------------------------------------------------
+
+PROBLEMA:
+  O DynHarmGain BOOSTAVA quando o envelope estava BAIXO!
+  - env < threshLow → target = boostTarget (1.12 a 1.80)
+  - Isso AMPLIFICAVA ruído residual em passagens calmas
+  - Resultado: "se abaixa totalmente e só ouve distorção/buzina"
+
+SINTOMAS:
+  - Distorção no grave
+  - Pumping na voz do cantor
+  - Quando volume abaixa, só se ouve distorção/buzina
+
+SOLUÇÃO:
+  1. NOISE_FLOOR (0.015): Se env < NOISE_FLOOR, gain = 1.0 (NEUTRO)
+  2. MIN_BOOST = 1.0 (era 1.12) - sem boost mínimo obrigatório
+  3. BASE_BOOST = 1.30 (era 1.80) - boost máximo reduzido
+  4. Attack: 8ms → 25ms - elimina pumping na voz
+  5. Release: 100ms → 150ms - transição mais suave
+
+FIX NOISE GATES:
+  - NOISE_GATE_THRESH: 0.01 → 0.02 (2x mais agressivo)
+  - HARM_NOISE_FLOOR: 1e-5 → 5e-4 (50x mais agressivo)
+
+FIX DISTORÇÃO NO GRAVE:
+  - T2 limit: ±2.0 → ±1.5
+  - T3 limit: ±1.5 → ±1.2
+  - T4 limit: ±2.0 → ±1.5
+  - T5 limit: ±1.8 → ±1.2
+  - process5() output clamp: ±3.0 → ±2.0
+
+-------------------------------------------------------------------------------
+v35 - CORREÇÃO DO "FANHOSO" E BUZINA RESIDUAL NO SUBGRAVE
+-------------------------------------------------------------------------------
+
+PROBLEMA:
+  Polinômios T2 e T4 com coeficientes errados
+
+SOLUÇÃO:
+  FIX T2: T2(x) = 2.5x² → 2.0x²
+  FIX T4: T4(x) = 10x²(x²-1) → 8x²(x²-1)
+  
+  FIX VOLUME: Reduzido perceptualBoost (0.50→0.30) e loudnessComp (0.30→0.15)
+  FIX SUBNORMALIZER: MAX_BOOST reduzido de 2.50 para 1.80
+
+-------------------------------------------------------------------------------
+v34 - CORREÇÃO DA BUZINA PRINCIPAL
+-------------------------------------------------------------------------------
+
+PROBLEMA:
+  T3 estava usando x³ ao invés do polinômio Chebyshev correto
+
+ANÁLISE MATEMÁTICA:
+  T3_errado(x) = x³
+  Para x = cos(θ): cos³(θ) = (3cos(θ) - cos(3θ)) / 4
+  Isso VAZA 75% da fundamental de volta!
+
+SOLUÇÃO:
+  T3_correto(x) = (4x³ - 3x) × 0.25
+  Para x = cos(θ): T3(cos(θ)) = cos(3θ) ← HARMÔNICA PURA
+
+===============================================================================
+ARQUIVOS MODIFICADOS
+===============================================================================
+
+1. DspStructs.h
+   - ChebyshevGen: Polinômios T2, T3, T4, T5
+   - DynHarmGain: NOISE_FLOOR, attack/release times
+   - SubNormalizer: threshold
+
+2. HybridEngine.h
+   - Documentação de versões
+   - MAX_EFFECTIVE, NOISE_GATE_THRESH
+
+3. HybridEngine.cpp
+   - Noise gate per-sample
+   - Ordem de processamento de harmônicos
+
+4. AdvancedParams.h
+   - Pesos harmônicos (HE_H2_BASE, etc.)
+   - Drive scale
+   - Boost/cut limits
+
+===============================================================================
+RESUMO DA CAUSA RAIZ
+===============================================================================
+
+A buzina/chiado tinha MÚLTIPLAS causas:
+
+1. POLINÔMIOS CHEBYSHEV ERRADOS (v34, v35, v37) ← CAUSA PRINCIPAL
+   - T3 = x³ vazava 75% da fundamental
+   - T2 e T4 com coeficientes errados geravam espúrios
+
+2. DYNAMIC GAIN AMPLIFICANDO RUÍDO (v36)
+   - DynHarmGain boostava quando sinal estava baixo
+   - Amplificava ruído residual em passagens calmas
+
+3. NOISE GATES MUITO PERMISSIVOS (v36)
+   - Deixavam passar ruído numérico dos filtros
+
+4. PUMPING (v36)
+   - Attack muito rápido (8ms) causava variação brusca
+
+===============================================================================
+TESTE DA v38
+===============================================================================
+
+Para verificar se a correção funcionou:
+
+1. Aplicar drive=5 com mix=100%
+2. Tocar música com baixo forte
+3. Verificar:
+   ✓ Não deve haver chiado/distorção
+   ✓ Grave deve ser limpo e definido
+   ✓ Volume deve ser proporcional à música
+   ✓ Voz do cantor não deve ter pumping
+
+Se ainda houver chiado:
+   - Pode ser intermodulação do conteúdo original
+   - Reduzir drive ou mix
+   - Verificar se não há clipping em outro ponto da cadeia
+
+===============================================================================

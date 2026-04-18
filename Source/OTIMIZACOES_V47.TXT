@@ -1,0 +1,64 @@
+//==============================================================================
+// OTIMIZAÇÕES v47 - TIME-SLICING E SKIP INTELIGENTE
+//==============================================================================
+//
+// PROBLEMA IDENTIFICADO:
+// O plugin estava processando ~51 filtros biquad por sample, causando
+// travamentos mesmo após otimizações anteriores.
+//
+// CULPADOS PRINCIPAIS:
+// 1. DeepVocalProtector.processHarmonic() - até 12 filtros por sample
+//    - HarmonicPhaseShifter: 6 filtros all-pass
+//    - SpectralNotchBank: 5 filtros (3 notch + 2 bandpass)
+//    - singleNotch: 1 filtro
+// 2. VocalBandDetector.analyzeBass() - 2 filtros por sample
+//
+// SOLUÇÕES IMPLEMENTADAS:
+//
+// 1. TIME-SLICING COM SUB-BLOCOS (novo)
+//    - Dividir o buffer em sub-blocos de 64 samples
+//    - Permite que a CPU "respire" entre sub-blocos
+//    - Reduz pressão no cache L1/L2
+//
+// 2. ANÁLISE VOCAL A CADA 4 SAMPLES (novo)
+//    - Antes: analyzeBass() chamado TODOS os samples
+//    - Agora: analyzeBass() chamado a cada 4 samples ((i & 3) == 0)
+//    - Redução de 75% no processamento do detector vocal
+//
+// 3. CACHE DE DECISÃO VOCAL (novo)
+//    - Antes: isVocalDetected() checado sample a sample
+//    - Agora: cache no início do bloco, usado em todo o bloco
+//    - Evita lookups repetitivos
+//
+// 4. SKIP INTELIGENTE DE FILTROS PESADOS (novo)
+//    - Se vocal NÃO detectado OU score < 0.3:
+//      PULA DeepVocalProtector.processHarmonic() (12 filtros!)
+//      Usa apenas HPFs leves (2 filtros)
+//    - Redução de ~80% no processamento quando não há vocal
+//
+// 5. SUB-BLOCOS NO OVERSAMPLING (novo)
+//    - Oversampling processa 2x samples
+//    - Agora dividido em chunks para evitar picos de CPU
+//
+// RESULTADO ESPERADO:
+// - Redução de ~60-70% na carga de CPU
+// - Eliminação de travamentos
+// - Som inalterado (filtros pulados não afetam o som quando não há vocal)
+//
+//==============================================================================
+
+CONTAGEM DE FILTROS ANTES:
+- Fase 1: 6 filtros/ch/sample (crossover + vocalDetector)
+- Fase 3: ~20 filtros/ch/sample (com DeepVocalProtector completo)
+- Total: ~51 filtros por sample (2 canais)
+
+CONTAGEM DE FILTROS DEPOIS:
+- Sem vocal detectado:
+  - Fase 1: ~4 filtros/ch/sample (análise a cada 4 samples)
+  - Fase 3: ~6 filtros/ch/sample (só HPFs)
+  - Total: ~20 filtros por sample
+
+- Com vocal detectado:
+  - Fase 1: ~5 filtros/ch/sample
+  - Fase 3: ~18 filtros/ch/sample
+  - Total: ~46 filtros por sample (mas só quando necessário!)

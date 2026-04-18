@@ -1,0 +1,333 @@
+================================================================================
+HISTÓRICO COMPLETO DO VINIBASS - DOCUMENTAÇÃO DEFINITIVA
+================================================================================
+
+ÚLTIMA VERSÃO ESTÁVEL: v40
+DATA: 04/04/2026
+
+================================================================================
+⚠️⚠️⚠️ REGRAS DE OURO - NUNCA VIOLAR ⚠️⚠️⚠️
+================================================================================
+
+1. NUNCA ALTERE OS COEFICIENTES DOS POLINÔMIOS CHEBYSHEV
+   - T2 = 2.0 * x²           (NUNCA mudar o 2.0)
+   - T3 = (4x³ - 3x) * 0.25  (NUNCA mudar o 4.0 ou 3.0)
+   - T4 = 8.0 * x²(x² - 1)   (NUNCA mudar o 8.0)
+   - T5 = 16x⁵ - 20x³ + 5x   (NUNCA mudar os coeficientes)
+   
+   Para reduzir intensidade, use OUTPUT SCALE (aplicado DEPOIS do polinômio)
+
+2. NUNCA APLIQUE O MESMO GANHO DUAS VEZES
+   - Verifique se harmGainVal não está sendo aplicado múltiplas vezes
+   - Cada variável de ganho deve ser aplicada EXATAMENTE UMA VEZ
+
+3. NUNCA USE VALORES DE GANHO ABAIXO DE 0.70
+   - harmGain mínimo: 0.70 (queda máxima de 30%)
+   - Valores como 0.10, 0.20 causam "sugar o som"
+
+4. SMOOTHING DE GANHO DEVE SER >= 50ms
+   - Smoothing muito rápido causa transições bruscas
+   - Recomendado: 80ms para detectores
+
+5. NUNCA AMPLIFIQUE RUÍDO EM PASSAGENS CALMAS
+   - DynHarmGain deve retornar 1.0 (neutro) quando sinal < noise floor
+   - Não boostar quando o envelope está baixo
+
+================================================================================
+HISTÓRICO COMPLETO DE PROBLEMAS E SOLUÇÕES
+================================================================================
+
+-------------------------------------------------------------------------------
+v40 - CORREÇÃO DO CHIADO INTERMITENTE "SUGA O SOM" ✅ RESOLVIDO
+-------------------------------------------------------------------------------
+
+PROBLEMA:
+  Chiado INTERMITENTE que "suga o som" por alguns segundos
+  Diferente do chiado contínuo anterior
+  
+  SINTOMAS RELATADOS PELO USUÁRIO:
+  - "De vez em quando tem um chiado que deixa o som fanhoso"
+  - "Parece que suga o som por alguns segundos"
+  - "Distorce todo o som e deixa um pouquinho feio"
+  - "Não é aquele chiado contínuo"
+
+CAUSA RAIZ (2 PROBLEMAS CRÍTICOS):
+
+  PROBLEMA 1 - BUG CRÍTICO NO SimpleEngine.cpp:
+    harmGainVal era aplicado DUAS VEZES!
+    
+    Linha 405: h *= harmGainVal;         ← PRIMEIRA aplicação
+    Linha 519: h * harmGainVal * ...     ← SEGUNDA aplicação
+    
+    Se harmGainVal = 0.20:
+      Resultado = 0.20 * 0.20 = 0.04 (96% de redução!)
+    
+  PROBLEMA 2 - IntentDetector com valores MUITO baixos:
+    harmGain = 0.20f;  // voicedLocked (queda de 80%!)
+    harmGain = 0.10f;  // rumbleLocked (queda de 90%!)
+    
+    Quando o detector "travava", o som SUMIA quase completamente
+
+SOLUÇÃO:
+
+  1. IntentDetector - Aumentar harmGain mínimo:
+     MIN_GAIN_VOICED:  0.20 → 0.75
+     MIN_GAIN_RUMBLE:  0.10 → 0.70
+     MIN_GAIN_NORMAL:  0.95 → 0.90
+  
+  2. IntentDetector - Aumentar smoothing:
+     gainSmoothCoef: 10ms → 80ms
+  
+  3. SimpleEngine.cpp - Remover aplicação dupla:
+     REMOVIDO: h *= harmGainVal; (linha 405)
+     Agora harmGainVal é aplicado APENAS UMA VEZ no final
+  
+  4. SimpleEngine.cpp - Corrigir modo legado:
+     harmGainVal 0.15/0.25/0.30 → 0.80/0.85/0.90
+     Adicionado clamp mínimo de 0.80
+
+ARQUIVOS MODIFICADOS:
+  - DspStructs.h: IntentDetector (constantes e smoothing)
+  - SimpleEngine.cpp: Removida aplicação dupla de harmGainVal
+  - HybridEngine.h: Documentação v40
+
+-------------------------------------------------------------------------------
+v39 - REDUÇÃO AGRESSIVA DE HARMÔNICOS
+-------------------------------------------------------------------------------
+
+PROBLEMA:
+  Harmônicos ainda muito fortes (~0.57 após compressão)
+  Causava intermodulação com o sinal original = chiado residual
+
+SOLUÇÃO:
+  Output scales REDUZIDOS:
+    T2: 0.50 → 0.28
+    T3: 0.12 → 0.06
+    T4: 0.08 → 0.04
+    T5: 0.06 → 0.02
+  
+  Pesos harmônicos REDUZIDOS:
+    HE_H2_BASE: 0.85 → 0.55
+    HE_H3_BASE: 0.60 → 0.40
+    HE_H4_BASE: 0.35 → 0.20
+    HE_H5_BASE: 0.20 → 0.10
+
+-------------------------------------------------------------------------------
+v38 - RESTAURAÇÃO DOS POLINÔMIOS CHEBYSHEV CORRETOS
+-------------------------------------------------------------------------------
+
+PROBLEMA:
+  Na v37, alguém alterou os COEFICIENTES dos polinômios Chebyshev:
+    T2: 2.0 → 1.5 (ERRADO!)
+    T4: 8.0 → 6.0 (ERRADO!)
+  
+  Isso QUEBRA a propriedade matemática fundamental:
+    T_n(cos(θ)) = cos(nθ)  ← GERA HARMÔNICA PURA
+  
+  Com coeficientes errados:
+    1.5cos²(θ) ≠ cos(2θ)  ← GERA FREQUÊNCIAS ESPÚRIAS!
+
+SOLUÇÃO:
+  RESTAURAR polinômios Chebyshev CORRETOS:
+    T2(x) = 2.0 * x²          (era 1.5)
+    T4(x) = 8.0 * x²(x² - 1)  (era 6.0)
+  
+  Usar OUTPUT SCALE para reduzir intensidade
+
+LIÇÃO APRENDIDA:
+  NUNCA alterar os COEFICIENTES dos polinômios Chebyshev!
+
+-------------------------------------------------------------------------------
+v36 - CORREÇÃO DE DYNAMICS + PUMPING + DISTORÇÃO
+-------------------------------------------------------------------------------
+
+PROBLEMA:
+  O DynHarmGain BOOSTAVA quando o envelope estava BAIXO!
+  - env < threshLow → target = boostTarget (1.12 a 1.80)
+  - Isso AMPLIFICAVA ruído residual em passagens calmas
+  - Resultado: "se abaixa totalmente e só ouve distorção/buzina"
+
+SINTOMAS:
+  - Distorção no grave
+  - Pumping na voz do cantor
+  - Quando volume abaixa, só se ouve distorção/buzina
+
+SOLUÇÃO:
+  1. NOISE_FLOOR (0.015): Se env < NOISE_FLOOR, gain = 1.0 (NEUTRO)
+  2. MIN_BOOST = 1.0 (era 1.12) - sem boost mínimo obrigatório
+  3. BASE_BOOST = 1.30 (era 1.80) - boost máximo reduzido
+  4. Attack: 8ms → 25ms - elimina pumping na voz
+  5. Release: 100ms → 150ms - transição mais suave
+
+FIX NOISE GATES:
+  NOISE_GATE_THRESH: 0.01 → 0.02 (2x mais agressivo)
+  HARM_NOISE_FLOOR: 1e-5 → 5e-4 (50x mais agressivo)
+
+FIX DISTORÇÃO NO GRAVE:
+  T2 limit: ±2.0 → ±1.5
+  T3 limit: ±1.5 → ±1.2
+  T4 limit: ±2.0 → ±1.5
+  T5 limit: ±1.8 → ±1.2
+  process5() output clamp: ±3.0 → ±2.0
+
+-------------------------------------------------------------------------------
+v35 - CORREÇÃO DO "FANHOSO" E BUZINA RESIDUAL NO SUBGRAVE
+-------------------------------------------------------------------------------
+
+PROBLEMA:
+  Polinômios T2 e T4 com coeficientes errados
+
+SOLUÇÃO:
+  FIX T2: T2(x) = 2.5x² → 2.0x²
+  FIX T4: T4(x) = 10x²(x²-1) → 8x²(x²-1)
+  
+  FIX VOLUME: Reduzido perceptualBoost (0.50→0.30) e loudnessComp (0.30→0.15)
+  FIX SUBNORMALIZER: MAX_BOOST reduzido de 2.50 para 1.80
+
+-------------------------------------------------------------------------------
+v34 - CORREÇÃO DA BUZINA PRINCIPAL
+-------------------------------------------------------------------------------
+
+PROBLEMA:
+  T3 estava usando x³ ao invés do polinômio Chebyshev correto
+
+ANÁLISE MATEMÁTICA:
+  T3_errado(x) = x³
+  Para x = cos(θ): cos³(θ) = (3cos(θ) - cos(3θ)) / 4
+  Isso VAZA 75% da fundamental de volta!
+
+SOLUÇÃO:
+  T3_correto(x) = (4x³ - 3x) × 0.25
+  Para x = cos(θ): T3(cos(θ)) = cos(3θ) ← HARMÔNICA PURA
+
+-------------------------------------------------------------------------------
+v33 - CORREÇÕES DE FILTRAGEM
+-------------------------------------------------------------------------------
+
+FIX1: singleNotch.setNotch() era chamado TODO SAMPLE
+  → impulso de 'click' a ~43Hz → BUZINA METÁLICA
+  Correção: cache lastNotchFreq, só recalcula quando muda > 0.5Hz
+
+FIX2: Crossfade do notch usava sinal em fases diferentes
+  → filtragem comb = AM-modulation = BUZINA
+  Correção: usar 'preNotch' (já phase-shifted) como referência
+
+FIX3: currentPhaseShift era atribuição DIRETA sem suavização
+  → modulação de amplitude nos harmônicos = BUZINA
+  Correção: suavização exponencial de 60ms
+
+FIX4: subGain era aplicado DUAS VEZES no sub
+  → subGain² → distorção no dry bass
+  Correção: removido o '* subGain' externo
+
+================================================================================
+POLINÔMIOS CHEBYSHEV CORRETOS - REFERÊNCIA
+================================================================================
+
+Os polinômios de Chebyshev têm a propriedade matemática:
+
+  T_n(cos(θ)) = cos(nθ)
+
+Isso significa que aplicados a um sinal cosenoidal, geram EXATAMENTE
+a n-ésima harmônica, SEM vazamento da fundamental.
+
+POLINÔMIOS CORRETOS (NUNCA ALTERAR):
+
+  T0(x) = 1
+  T1(x) = x
+  T2(x) = 2x²                           ← Coeficiente: 2.0
+  T3(x) = 4x³ - 3x                      ← Coeficientes: 4.0 e 3.0
+  T4(x) = 8x⁴ - 8x² + 1                 ← Coeficiente: 8.0
+  T5(x) = 16x⁵ - 20x³ + 5x              ← Coeficientes: 16, 20, 5
+  T6(x) = 32x⁶ - 48x⁴ + 18x² - 1        ← Coeficiente: 32
+
+Para processamento de áudio:
+  - Removemos o termo DC (+1 em T4, -1 em T6, etc.)
+  - Aplicamos OUTPUT SCALE para controlar intensidade
+
+IMPLEMENTAÇÃO CORRETA (DspStructs.h):
+
+  static inline float T2 (float x) noexcept 
+  { 
+      const float chebyshev = 2.0f * x * x;  // NUNCA MUDAR O 2.0!
+      const float outputScale = 0.28f;        // Use isto para ajustar
+      return juce::jlimit (-0.8f, 0.8f, chebyshev * outputScale);
+  }
+  
+  static inline float T3 (float x) noexcept
+  {
+      const float chebyshev = 4.0f * x * x * x - 3.0f * x;  // NUNCA MUDAR!
+      const float outputScale = 0.06f;
+      return juce::jlimit (-0.4f, 0.4f, chebyshev * outputScale);
+  }
+  
+  static inline float T4 (float x) noexcept
+  {
+      const float x2 = x * x;
+      const float chebyshev = 8.0f * x2 * (x2 - 1.0f);  // NUNCA MUDAR O 8.0!
+      const float outputScale = 0.04f;
+      return juce::jlimit (-0.4f, 0.4f, chebyshev * outputScale);
+  }
+
+================================================================================
+CHECKLIST ANTES DE COMMITAR
+================================================================================
+
+☐ Verificar se polinômios Chebyshev não foram alterados
+☐ Verificar se não há ganho aplicado duas vezes
+☐ Verificar se valores de harmGain são >= 0.70
+☐ Verificar se smoothing de ganho é >= 50ms
+☐ Verificar se DynHarmGain não boosta ruído
+☐ Testar com drive alto e mix 100%
+☐ Testar passagens calmas (não deve amplificar ruído)
+☐ Testar transições (não deve haver "sugar o som")
+
+================================================================================
+ARQUIVOS CRÍTICOS
+================================================================================
+
+1. DspStructs.h
+   - ChebyshevGen: Polinômios T2, T3, T4, T5
+   - DynHarmGain: NOISE_FLOOR, attack/release times
+   - IntentDetector: MIN_GAIN_*, smoothing
+   - SubNormalizer: threshold
+
+2. SimpleEngine.cpp
+   - Aplicação de harmGainVal (cuidado com duplicação!)
+   - Modo legado: valores de ganho
+
+3. HybridEngine.cpp
+   - Noise gate per-sample
+   - Ordem de processamento de harmônicos
+
+4. HybridEngine.h
+   - MAX_EFFECTIVE, NOISE_GATE_THRESH
+
+5. AdvancedParams.h
+   - Pesos harmônicos (HE_H2_BASE, etc.)
+   - Drive scale
+   - Boost/cut limits
+
+================================================================================
+RESUMO DA CAUSA RAIZ DE CADA PROBLEMA
+================================================================================
+
+1. BUZINA/CHIADO CONTÍNUO
+   → Polinômios Chebyshev com coeficientes errados (v34, v35, v37)
+   → T3 = x³ vazava 75% da fundamental
+   → T2 e T4 com coeficientes errados geravam espúrios
+
+2. AMPLIFICAÇÃO DE RUÍDO EM PASSAGENS CALMAS
+   → DynHarmGain boostava quando sinal estava baixo (v36)
+
+3. PUMPING NA VOZ
+   → Attack muito rápido (8ms) (v36)
+
+4. CHIADO INTERMITENTE "SUGA O SOM"
+   → harmGainVal aplicado DUAS VEZES (v40)
+   → IntentDetector com harmGain = 0.10/0.20 (v40)
+   → Smoothing muito rápido 10ms (v40)
+
+================================================================================
+FIM DA DOCUMENTAÇÃO
+================================================================================
