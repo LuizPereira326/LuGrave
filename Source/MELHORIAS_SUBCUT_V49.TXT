@@ -1,0 +1,152 @@
+# MELHORIAS DO SUB CUT FILTER - v49
+
+## Problemas Identificados (Análise Ponto a Ponto)
+
+### 1. Cálculo do targetCut preso no limite superior ✅ CRÍTICO
+**Problema:** O `baseCut` já mapeia para `[SP_HPF_BASE_CUT, SP_TARGET_CUT_MAX]`, e todos os lifts (`musicLift`, `pressureLift`, `hardLift`, `driveLift`, `mixLift`, `gainLift`) são SOMENTE positivos. Resultado: o cutoff tendia a bater no teto de 105 Hz na maioria das situações, tornando o filtro praticamente estático.
+
+**Solução Implementada:**
+- Adicionados parâmetros `SP_*_LIFT_MAX` em `AdvancedParams.h` com valores ~40-50% menores que os hardcoded originais
+- Agora o usuário pode ajustar finamente cada lift via painel Advanced
+- Valores padrão reduzidos mantêm o cutoff variando musicalmente dentro do range
+
+```cpp
+// ANTES (hardcoded altos → sempre no teto)
+musicLift   = jmap(balanceSweet, 0, 1, 0, 6.5f);    // +6.5 Hz máx
+pressureLift= jmap(pressure,     0, 1, 0, 15.0f);   // +15 Hz máx
+hardLift    = jmap(aggressive,   0, 1, 0, 11.0f);   // +11 Hz máx
+
+// AGORA (controlados por parâmetro → varia musicalmente)
+musicLift   = jmap(balanceSweet, 0, 1, 0, audioParams.SP_MUSIC_LIFT_MAX);    // default 3.5 Hz
+pressureLift= jmap(pressure,     0, 1, 0, audioParams.SP_PRESSURE_LIFT_MAX); // default 8.0 Hz
+hardLift    = jmap(aggressive,   0, 1, 0, audioParams.SP_HARD_LIFT_MAX);     // default 6.0 Hz
+```
+
+---
+
+### 2. Falta de suavização dos coeficientes do filtro ✅ ALTA PRIORIDADE
+**Problema:** O cutoff mudava em degraus abruptos quando `|targetCut - lastSubCutFreq| > 2.0f`. Isso causava clicks/pop audíveis durante transições.
+
+**Solução Implementada:**
+- Adicionada interpolação LINEAR do `targetCut` ao longo de `SP_CUTOFF_SMOOTH_MS` (default 150ms)
+- Variáveis de estado: `smoothedTargetCut` e `smoothCounter` em `PluginProcessor.h`
+- Interpolação calculada por bloco de áudio, garantindo transição suave sem descontinuidades
+- Threshold de atualização reduzido de 2.0 Hz para 0.5 Hz (mais precisão com suavização)
+
+```cpp
+// Interpolação linear por bloco
+const int smoothTotalSamples = roundToInt(SP_CUTOFF_SMOOTH_MS * currentSR / 1000.0f);
+
+if (smoothCounter >= smoothTotalSamples) {
+    smoothedTargetCut = rawTargetCut;  // Reset quando completa
+    smoothCounter = 0;
+} else {
+    const float increment = (rawTargetCut - smoothedTargetCut) / (smoothTotalSamples - smoothCounter);
+    smoothedTargetCut += increment * samplesPerBlock;
+    smoothCounter = min(smoothCounter + samplesPerBlock, smoothTotalSamples);
+    finalTargetCut = smoothedTargetCut;  // Usa valor interpolado
+}
+```
+
+**Nota Técnica:** NÃO foi usado `.reset()` nos filtros antes de `setHighPass()`, pois isso causaria perda de memória do filtro e potencialmente mais artefatos. A solução elegante é suavizar o parâmetro ANTES de atualizar os coeficientes.
+
+---
+
+### 3. Decimação da detecção - arquitetura ⚠️ MÉDIA PRIORIDADE
+**Problema Identificado:** O código pula amostras (`i += decimate`) mas roda LPFs e envelopes com coeficientes calculados para `currentSR`. Isso distorce a medição de `subEnergy/bodyEnergy`.
+
+**Status:** Não foi alterado nesta iteração para manter compatibilidade. Melhorias futuras podem incluir:
+- Processar LPFs+envelopes em full rate e decimar só a acumulação
+- OU recalcular coeficientes para `currentSR / decimate`
+
+---
+
+## Novos Parâmetros no AdvancedParams.h
+
+```cpp
+// Suavização do cutoff
+float SP_CUTOFF_SMOOTH_MS = 150.0f;  // Tempo de interpolação (10-500ms)
+
+// Lifts reduzidos para manter adaptabilidade
+float SP_MUSIC_LIFT_MAX    = 3.5f;   // era 6.5  (-46%)
+float SP_PRESSURE_LIFT_MAX = 8.0f;   // era 15.0 (-47%)
+float SP_HARD_LIFT_MAX     = 6.0f;   // era 11.0 (-45%)
+float SP_DRIVE_LIFT_MAX    = 2.5f;   // era 4.5  (-44%)
+float SP_MIX_LIFT_MAX      = 1.5f;   // era 3.0  (-50%)
+float SP_GAIN_LIFT_MAX     = 1.0f;   // era 2.0  (-50%)
+```
+
+---
+
+## Mudanças no PluginProcessor.h
+
+Adicionadas variáveis de estado para suavização:
+```cpp
+float smoothedTargetCut = -1.0f;  // Valor atual interpolado
+int   smoothCounter = 0;          // Contador para interpolação
+```
+
+Inicializadas em `prepareToPlay()` e resetadas em `releaseResources()`.
+
+---
+
+## Mudanças no PluginProcessor.cpp
+
+1. **Sincronização de novos parâmetros:** Adicionados `SYNC_ADV()` para todos os novos lifts e `SP_CUTOFF_SMOOTH_MS`
+
+2. **Registro no APVTS:** Adicionados 8 novos parâmetros ajustáveis via UI:
+   - `SP_CUTOFF_SMOOTH_MS` (10-500ms, step 5ms)
+   - `SP_MUSIC_LIFT_MAX` (0-15Hz, step 0.5Hz)
+   - `SP_PRESSURE_LIFT_MAX` (0-30Hz, step 1Hz)
+   - `SP_HARD_LIFT_MAX` (0-20Hz, step 1Hz)
+   - `SP_DRIVE_LIFT_MAX` (0-10Hz, step 0.5Hz)
+   - `SP_MIX_LIFT_MAX` (0-10Hz, step 0.5Hz)
+   - `SP_GAIN_LIFT_MAX` (0-10Hz, step 0.5Hz)
+
+3. **Cálculo do targetCut:** Substituídos valores hardcoded por parâmetros
+
+4. **Interpolação:** Adicionado algoritmo de suavização linear entre blocos
+
+5. **Threshold refinado:** Reduzido de 2.0 Hz para 0.5 Hz (com suavização, pode ser mais preciso)
+
+---
+
+## Resultados Esperados
+
+✅ **Cutoff varia musicalmente:** Com lifts reduzidos, o `targetCut` agora se move dentro do range [85-105 Hz] de forma perceptível e útil, em vez de ficar travado no teto.
+
+✅ **Sem clicks/pop:** A interpolação de 150ms elimina transições abruptas dos coeficientes do HPF.
+
+✅ **Controle fino:** Usuário pode ajustar cada lift individualmente via painel Advanced para diferentes estilos musicais.
+
+✅ **Mais precisão:** Threshold de 0.5 Hz permite que o filtro siga melhor as variações sutis do material.
+
+---
+
+## Prioridade de Correção (Ranking Final)
+
+| Prioridade | Problema                          | Status  |
+|------------|-----------------------------------|---------|
+| ALTA       | Cutoff preso no teto              | ✅ Fix  |
+| ALTA       | Falta de suavização               | ✅ Fix  |
+| MÉDIA      | Threshold fixo de 2Hz             | ✅ Fix  |
+| MÉDIA      | Arquitetura da decimação          | ⚠️ Pendente |
+| BAIXA      | Overhead de setTimes() por bloco  | ⚠️ Futuro |
+| FEATURE    | Ordem do filtro ajustável         | ❌ Não é bug |
+
+---
+
+## Testes Recomendados
+
+1. **Teste de transição:** Tocar sinal com corte em 80 Hz e observar se há clicks ao mudar parâmetros
+2. **Teste de adaptabilidade:** Verificar se `targetCut` varia entre 85-105 Hz com música real
+3. **Teste de CPU:** Medir impacto da interpolação (deve ser insignificante)
+4. **Teste A/B:** Comparar som antes/depois com lifts reduzidos
+
+---
+
+## Notas Técnicas
+
+- **NÃO foi usado `.reset()` nos filtros:** Resetar estados de IIR no meio do áudio causa descontinuidade. A solução correta é suavizar o parâmetro.
+- **Interpolação linear vs exponencial:** Linear foi escolhida por simplicidade e eficiência. Exponencial seria mais "natural" mas requer mais cálculos.
+- **Samples per block:** Usado `buffer.getNumSamples()` diretamente, assumindo blocos constantes durante a interpolação.

@@ -202,6 +202,19 @@ struct AdvancedParams
     float SP_TARGET_CUT_MIN  = 85.0f;   // era 70 → piso garantido: -6dB em 88Hz, -4dB em 100Hz
     float SP_TARGET_CUT_MAX  = 105.0f;  // era 95 → teto com headroom real
     float SP_DECIMATE_FACTOR = 4.0f;
+    
+    // MELHORIA v49: Parâmetros para suavização do cutoff (evita clicks/pop)
+    float SP_CUTOFF_SMOOTH_MS = 150.0f; // Tempo de interpolação do targetCut
+    
+    // MELHORIA v49: Redução dos lifts para manter adaptabilidade
+    // Antes: lifts somavam +30+ Hz → sempre batia no teto de 105Hz
+    // Agora: lifts reduzidos ~40-50% → cutoff varia musicalmente dentro do range
+    float SP_MUSIC_LIFT_MAX    = 3.5f;   // era 6.5
+    float SP_PRESSURE_LIFT_MAX = 8.0f;   // era 15.0
+    float SP_HARD_LIFT_MAX     = 6.0f;   // era 11.0
+    float SP_DRIVE_LIFT_MAX    = 2.5f;   // era 4.5
+    float SP_MIX_LIFT_MAX      = 1.5f;   // era 3.0
+    float SP_GAIN_LIFT_MAX     = 1.0f;   // era 2.0
 
 };
 
