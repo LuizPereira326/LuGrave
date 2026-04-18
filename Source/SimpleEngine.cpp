@@ -645,7 +645,7 @@ void SimpleHarmonicEngine::processBlock (juce::AudioBuffer<float>& buffer,
             }
 
             // CORREÇÃO v50 / Bug #1: harmGainVal era calculado mas nunca aplicado
-            if (!useDeepVocalProtection)
+            // FIX v53: Aplicar intentDet harmGain SEMPRE, independente do useDeepVocalProtection
             {
                 float targetVeto = 0.0f;
                 if (voicedScoreGlobal > adaptiveThreshold)
