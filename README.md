@@ -118,48 +118,217 @@ Crossover de alta precisão com soma de fase coerente.
 
 ## 🔧 Fluxo de Processamento
 
+### Diagrama Detalhado da Arquitetura de Sinal
+
 ```
-Entrada
-  │
-  ├─→ [Crossover Linkwitz-Riley 4ª Ordem]
-  │       │
-  │       ├─→ Banda Grave (< X Hz) ──→ [Envelope Follower]
-  │       │                                  │
-  │       │                                  ↓ (amplitude dinâmica)
-  │       │                            [Oversampler 4x]
-  │       │                                  │
-  │       │                                  ↓
-  │       │                          [Chebyshev T2+T3+T4]
-  │       │                          (geração de 2f, 3f, 4f)
-  │       │                                  │
-  │       │                                  ↓
-  │       │                           [Anti-Alias Filter]
-  │       │                           (downsample 4x→1x)
-  │       │                                  │
-  │       │                                  ↓
-  │       │                    [HPF LR4 @ 0.90×cutFreq]
-  │       │                    (remoção do fundamental vazado)
-  │       │                                  │
-  │       │                                  ↓
-  │       │                    [LPF LR4 @ 5×cutFreq]
-  │       │                    (proteção da região vocal)
-  │       │                    Corte: harmônicos > 800 Hz
-  │       │                                  │
-  │       │                                  ↓ harmônicos processados
-  │       │                                  │
-  │       └─→ Banda Aguda (> X Hz) ──────────┤
-  │                                          │
-  └─→ Banda Grave × (1 − SubReplace) ────────┤
-                                              │
-                                      [Mixer: grave + harmônicos]
-                                              │
-                                        [DC Block Filter]
-                                        [Soft-Knee Limiter]
-                                        [Output Gain]
-                                              │
-                                              ↓
-                                            Saída
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                            CAMINHO 1: DIVISÃO ESPECTRAL                         │
+│                         (Linkwitz-Riley 4ª Ordem Crossover)                     │
+└─────────────────────────────────────────────────────────────────────────────────┘
+                                      │
+                              [Entrada de Áudio]
+                                      │
+                    ┌─────────────────┴─────────────────┐
+                    │                                   │
+                    ▼                                   ▼
+        ┌───────────────────────┐           ┌───────────────────────┐
+        │   LOW-PASS LR4        │           │   HIGH-PASS LR4       │
+        │   fc = cutFreq        │           │   fc = cutFreq        │
+        │   24 dB/oct           │           │   24 dB/oct           │
+        │   Fase Coerente       │           │   Fase Coerente       │
+        └───────────────────────┘           └───────────────────────┘
+                    │                                   │
+                    │ Banda Sub (< fc)                  │ Banda Kick (> fc)
+                    │ Energia: 20-80 Hz                 │ Energia: 80-20k Hz
+                    ▼                                   │
+        ┌───────────────────────┐                       │
+        │   Envelope Follower   │                       │
+        │   Attack: 5 ms        │                       │
+        │   Release: 60 ms      │                       │
+        │   Hold: 40 ms         │                       │
+        └───────────────────────┘                       │
+                    │                                   │
+                    │ envAmt (sinal de controle)        │
+                    ▼                                   │
+                                                                            
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                        CAMINHO 2: GERAÇÃO DE HARMÔNICOS                         │
+│                      (Processamento Paralelo com Oversampling)                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+                    │
+                    ▼
+        ┌───────────────────────┐
+        │   Oversampler 4x      │◄─── envAmt modula intensidade
+        │   Upsample: 44.1→176.4│
+        │   FIR Interpolation   │
+        └───────────────────────┘
+                    │
+                    ▼
+        ┌───────────────────────┐
+        │   Chebyshev T2 + T3   │
+        │   + T4 Waveshaper     │
+        │                       │
+        │   T2(x) = 2x² - 1     │► Gera 2ª harmônica (2f)
+        │   T3(x) = 4x³ - 3x    │► Gera 3ª harmônica (3f)
+        │   T4(x) = 8x⁴ - 8x²+1 │► Gera 4ª harmônica (4f)
+        │                       │
+        │   Blend ponderado por │
+        │   ISO 226 A-Weighting │
+        └───────────────────────┘
+                    │
+                    ▼
+        ┌───────────────────────┐
+        │   Anti-Alias Filter   │
+        │   Low-Pass @ 20 kHz   │
+        │   Remove imagens de   │
+        │   oversampling        │
+        └───────────────────────┘
+                    │
+                    ▼
+        ┌───────────────────────┐
+        │   Downsample 4x→1x    │
+        │   FIR Decimation      │
+        └───────────────────────┘
+                    │
+                    ▼
+        ┌───────────────────────┐
+        │   HPF Linkwitz-Riley  │
+        │   4ª Ordem            │
+        │   fc = 0.90 × cutFreq │
+        │   24 dB/oct           │
+        │                       │
+        │   Remove fundamental  │
+        │   vazado do waveshaper│
+        │   Atenuação: -4.4 dB  │
+        └───────────────────────┘
+                    │
+                    ▼
+        ┌───────────────────────┐
+        │   LPF Linkwitz-Riley  │
+        │   4ª Ordem            │
+        │   fc = 5 × cutFreq    │
+        │   Máx: 800 Hz         │
+        │                       │
+        │   Protege região      │
+        │   vocal (1k-4k Hz)    │
+        │   Remove harmônicos   │
+        │   ultra-sônicos       │
+        └───────────────────────┘
+                    │
+                    │ Harmônicos processados (2f, 3f, 4f)
+                    ▼
+
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                           CAMINHO 3: MIXAGEM FINAL                              │
+│                    (Blend entre Sub Original e Harmônicos)                      │
+└─────────────────────────────────────────────────────────────────────────────────┘
+                    
+        ┌───────────────────────┐               ┌───────────────────────┐
+        │   Banda Sub Original  │               │   Harmônicos          │
+        │   (do crossover)      │               │   (do waveshaper)     │
+        │                       │               │                       │
+        │   × (1 - subReplace)  │               │   × bassFake          │
+        │                       │               │                       │
+        │   Se subReplace=100%: │               │   Se bassFake=100%:   │
+        │   → Silencia sub      │               │   → 100% harmônicos   │
+        │   Se subReplace=0%:   │               │   Se bassFake=0%:     │
+        │   → Mantém sub        │               │   → 0% harmônicos     │
+        └───────────────────────┘               └───────────────────────┘
+                    │                                   │
+                    └──────────────┬────────────────────┘
+                                   │
+                                   ▼
+                    ┌──────────────────────────┐
+                    │   Mixer de Soma          │
+                    │   (sub + harmônicos)     │
+                    │                          │
+                    │   Soma coerente de fase  │
+                    │   (garantida por LR4)    │
+                    └──────────────────────────┘
+                                   │
+                                   ▼
+
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                         CAMINHO 4: PROCESSAMENTO DE SAÍDA                       │
+│                      (Finalização e Proteção do Sinal)                          │
+└─────────────────────────────────────────────────────────────────────────────────┘
+                    
+                                   │
+                                   ▼
+                    ┌──────────────────────────┐
+                    │   DC Block Filter        │
+                    │   High-Pass @ 10 Hz      │
+                    │   1ª Ordem (6 dB/oct)    │
+                    │                          │
+                    │   Remove offset DC do    │
+                    │   waveshaping não-linear │
+                    └──────────────────────────┘
+                                   │
+                                   ▼
+                    ┌──────────────────────────┐
+                    │   Look-Ahead Limiter     │
+                    │   Feed-Forward           │
+                    │                          │
+                    │   Look-Ahead: 5 ms       │
+                    │   Threshold: -0.17 dBFS  │
+                    │   Knee: 4 dB (soft)      │
+                    │   Attack: 0.5 ms         │
+                    │   Release: 150 ms        │
+                    │                          │
+                    │   Detector opera no      │
+                    │   sinal futuro (não      │
+                    │   atrasado), ganho       │
+                    │   aplicado ao sinal      │
+                    │   atrasado → Zero        │
+                    │   overshoot              │
+                    └──────────────────────────┘
+                                   │
+                                   ▼
+                    ┌──────────────────────────┐
+                    │   Output Gain            │
+                    │   -18 a +12 dB           │
+                    │   Compensação de loudness│
+                    └──────────────────────────┘
+                                   │
+                                   ▼
+                              [SAÍDA FINAL]
 ```
+
+### Legenda dos Blocos de Processamento
+
+| Bloco | Função | Parâmetros Chave | Impacto Sonoro |
+|-------|--------|------------------|----------------|
+| **Crossover LR4** | Divide espectro em sub/kick | `cutFreq` (20-300 Hz) | Determina faixa de processamento de graves |
+| **Envelope Follower** | Extrai amplitude dinâmica | Attack 5ms, Release 60ms, Hold 40ms | Controla modulação temporal dos harmônicos |
+| **Oversampler 4x** | Eleva taxa de amostragem | 44.1→176.4 kHz | Previne aliasing no waveshaping |
+| **Chebyshev T2+T3+T4** | Gera harmônicos puros | Ponderação ISO 226 | Cria percepção de sub-graves |
+| **HPF 0.90×fc** | Remove fundamental vazado | 24 dB/oct, -4.4dB @ fc | Elimina ressonância indesejada |
+| **LPF 5×fc** | Limita extensão espectral | Máx 800 Hz | Protege clareza vocal |
+| **Sub Replace Mixer** | Controla blend sub/harmônicos | 0-100% | Modo tradicional vs MaxxBass puro |
+| **DC Block** | Remove offset DC | HPF 10 Hz | Protege alto-falantes de DC |
+| **Look-Ahead Limiter** | Previne clipping | 5ms look-ahead, -0.17 dBFS | Garante integridade do sinal digital |
+
+### Detalhes Técnicos de Implementação
+
+#### Caminhos de Sinal vs Controle
+
+- **Caminho de Áudio (Sinal):** Entrada → Crossover → (Sub ou Harmônicos) → Mixer → Saída
+- **Caminho de Controle (Modulação):**Envelope Follower → `envAmt` → Drive dinâmico do waveshaper
+
+#### Processamento Paralelo vs Série
+
+- **Paralelo:** Banda Sub e Banda Kick processadas simultaneamente pelo crossover
+- **Série:** Dentro do caminho de harmônicos: Oversample → Waveshape → Filtrar → Downsample
+
+#### Frequências Críticas
+
+| Ponto | Frequência | Justificativa |
+|-------|------------|---------------|
+| Crossover | 20-300 Hz (ajustável) | Separa graves perceptivos do restante |
+| HPF Harmônicos | 0.90 × cutFreq | Rejeição máxima do fundamental sem afetar 2f |
+| LPF Harmônicos | min(5×cutFreq, 800 Hz) | Preserva harmônicos úteis, remove sibilância |
+| DC Block | 10 Hz | Inaudível, protege transdutores |
+| Limiter | -0.17 dBFS | Headroom para reconstrução intersample |
 
 ---
 
