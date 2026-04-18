@@ -5,90 +5,144 @@
 const juce::Identifier MaxxBassAudioProcessor::advancedParamsTreeId { "AdvancedParams" };
 
 //==============================================================================
-// NOVIDADE v50: Métodos de gerenciamento de estado (Undo/Redo, Presets, Reset)
+// v50: Ação undoável para preset load / reset
+// Armazena snapshots completos do APVTS antes e depois da operação.
+// Usa apvts.copyState() (deep copy) para garantir independência entre ações.
+//==============================================================================
+namespace {
+
+struct PluginStateAction : public juce::UndoableAction
+{
+    PluginStateAction (MaxxBassAudioProcessor& p,
+                       const juce::ValueTree& before,
+                       const juce::ValueTree& after)
+        : proc       (p),
+          stateBefore (before.createCopy()),
+          stateAfter  (after.createCopy())
+    {}
+
+    bool perform() override
+    {
+        proc.apvts.replaceState (stateAfter);
+        proc.refreshAdvancedParamsFromAPVTS();
+        proc.lastSubCutFreq    = -1.0f;
+        proc.smoothedTargetCut = -1.0f;
+        if (proc.onPresetLoaded) proc.onPresetLoaded();
+        return true;
+    }
+
+    bool undo() override
+    {
+        proc.apvts.replaceState (stateBefore);
+        proc.refreshAdvancedParamsFromAPVTS();
+        proc.lastSubCutFreq    = -1.0f;
+        proc.smoothedTargetCut = -1.0f;
+        if (proc.onPresetLoaded) proc.onPresetLoaded();
+        return true;
+    }
+
+    int getSizeInUnits() override { return 1; }
+
+    MaxxBassAudioProcessor& proc;
+    juce::ValueTree stateBefore, stateAfter;
+};
+
+} // namespace
+
+//==============================================================================
+// v50: Métodos de gerenciamento de estado (Undo/Redo, Presets, Reset)
 //==============================================================================
 
+// Fase 1 — captura o estado ANTES da operação undoável.
+// Deve ser chamado imediatamente antes de qualquer mudança de estado.
 void MaxxBassAudioProcessor::saveStateForUndo()
 {
-    // Criar um ValueTree com o estado atual de todos os parâmetros
-    juce::ValueTree stateTree (advancedParamsTreeId);
-    
-    // Salvar todos os parâmetros do APVTS
-    for (int i = 0; i < apvts.parameters.size(); ++i)
-    {
-        auto* param = apvts.parameters[i];
-        if (param != nullptr)
-            stateTree.setProperty (param->paramID, param->getValue(), nullptr);
-    }
-    
-    // Adicionar ao UndoManager
-    undoManager.beginNewTransaction();
-    undoManager.perform (new juce::UndoableValueTree ("Parameter Change", stateTree, apvts.state, nullptr));
+    undoStateBefore = apvts.copyState();
 }
 
+// Fase 2 — cria a ação undo com antes/depois e empurra no undoManager.
+// Chamado internamente depois que a operação foi concluída.
+void MaxxBassAudioProcessor::commitUndoTransaction (const juce::String& actionName)
+{
+    if (! undoStateBefore.isValid())
+        return;
+
+    auto stateAfter = apvts.copyState();
+    undoManager.beginNewTransaction (actionName);
+    undoManager.perform (new PluginStateAction (*this, undoStateBefore, stateAfter));
+    undoStateBefore = {};   // libera referência
+}
+
+// Salva preset em XML — não altera estado, portanto sem undo
 void MaxxBassAudioProcessor::savePresetToFile (const juce::File& file)
 {
-    // Criar XML com estado atual
     auto xml = apvts.state.createXml();
     if (xml != nullptr)
-    {
         xml->writeTo (file);
-        saveStateForUndo(); // Salvar ponto de undo após salvar preset
-    }
 }
 
 void MaxxBassAudioProcessor::loadPresetFromFile (const juce::File& file)
 {
-    if (!file.existsAsFile())
+    if (! file.existsAsFile())
         return;
-    
+
     auto xml = juce::XMLDocument::parse (file);
     if (xml != nullptr && xml->hasTagName (apvts.state.getType()))
     {
+        saveStateForUndo();   // Captura ANTES do carregamento
+
         auto newState = juce::ValueTree::fromXml (*xml);
         apvts.replaceState (newState);
         refreshAdvancedParamsFromAPVTS();
-        
+
         // Resetar filtros para evitar clicks
-        lastSubCutFreq = -1.0f;
+        lastSubCutFreq    = -1.0f;
         smoothedTargetCut = -1.0f;
-        smoothCounter = 0;
-        
-        // Notificar UI
+        cachedSubLPFFreq  = -1.0f;
+        cachedBodyLPFFreq = -1.0f;
+        cachedSubEnvAtt   = -1.0f;
+        cachedSubEnvRel   = -1.0f;
+        cachedBodyEnvAtt  = -1.0f;
+        cachedBodyEnvRel  = -1.0f;
+        cachedDecimate    = -1;
+
+        commitUndoTransaction ("Load Preset");  // Registra antes → depois no undoManager
+
         if (onPresetLoaded != nullptr)
             onPresetLoaded();
-            
-        saveStateForUndo(); // Salvar ponto de undo após carregar preset
     }
 }
 
 void MaxxBassAudioProcessor::resetToFactoryDefaults()
 {
-    saveStateForUndo(); // Salvar estado anterior para undo
-    
-    // Resetar todos os parâmetros para valores default
-    for (auto* param : apvts.parameters)
+    saveStateForUndo();   // Captura ANTES do reset
+
+    // getParameters() é a API pública do AudioProcessor para iterar parâmetros.
+    // apvts.parameters não é membro público documentado do APVTS.
+    for (auto* param : getParameters())
     {
-        if (param != nullptr)
-        {
-            auto* ranged = dynamic_cast<juce::RangedAudioParameter*> (param);
-            if (ranged != nullptr)
-                ranged->setValueNotifyingHost (ranged->getDefaultValue());
-        }
+        if (auto* ranged = dynamic_cast<juce::RangedAudioParameter*> (param))
+            ranged->setValueNotifyingHost (ranged->getDefaultValue());
     }
-    
+
     refreshAdvancedParamsFromAPVTS();
-    
+
     // Resetar filtros
-    lastSubCutFreq = -1.0f;
+    lastSubCutFreq    = -1.0f;
     smoothedTargetCut = -1.0f;
-    smoothCounter = 0;
-    
-    // Notificar UI
+    cachedSubLPFFreq  = -1.0f;
+    cachedBodyLPFFreq = -1.0f;
+    cachedSubEnvAtt   = -1.0f;
+    cachedSubEnvRel   = -1.0f;
+    cachedBodyEnvAtt  = -1.0f;
+    cachedBodyEnvRel  = -1.0f;
+    cachedDecimate    = -1;
+
+    commitUndoTransaction ("Reset to Defaults");  // Registra antes → depois
+
     if (onPresetLoaded != nullptr)
         onPresetLoaded();
 }
-
 static void syncAdvancedParamsFromApvts (juce::AudioProcessorValueTreeState& apvts, AdvancedParams& params)
 {
     #define SYNC_ADV(name) if (auto* value = apvts.getRawParameterValue (#name)) params.name = value->load();
@@ -340,9 +394,16 @@ void MaxxBassAudioProcessor::refreshAdvancedParamsFromAPVTS()
 void MaxxBassAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 {
     currentSR = sampleRate;
-    lastSubCutFreq = -1.0f;
-    smoothedTargetCut = -1.0f;  // MELHORIA v49: inicializa smooth
-    smoothCounter = 0;
+    lastSubCutFreq    = -1.0f;
+    smoothedTargetCut = -1.0f;  // v50: -1 sinaliza "primeiro bloco" para o IIR
+    // Cache de detecção: invalida para forçar re-setup no primeiro bloco
+    cachedSubLPFFreq  = -1.0f;
+    cachedBodyLPFFreq = -1.0f;
+    cachedSubEnvAtt   = -1.0f;
+    cachedSubEnvRel   = -1.0f;
+    cachedBodyEnvAtt  = -1.0f;
+    cachedBodyEnvRel  = -1.0f;
+    cachedDecimate    = -1;
     refreshAdvancedParamsFromAPVTS();
 
     for (int ch = 0; ch < 2; ++ch)
@@ -373,9 +434,15 @@ void MaxxBassAudioProcessor::releaseResources()
 {
     simpleEngine.reset();
     hybridEngine.reset();
-    lastSubCutFreq = -1.0f;
-    smoothedTargetCut = -1.0f;  // MELHORIA v49: reset smooth
-    smoothCounter = 0;
+    lastSubCutFreq    = -1.0f;
+    smoothedTargetCut = -1.0f;  // v50: reset IIR
+    cachedSubLPFFreq  = -1.0f;
+    cachedBodyLPFFreq = -1.0f;
+    cachedSubEnvAtt   = -1.0f;
+    cachedSubEnvRel   = -1.0f;
+    cachedBodyEnvAtt  = -1.0f;
+    cachedBodyEnvRel  = -1.0f;
+    cachedDecimate    = -1;
 
     for (int ch = 0; ch < 2; ++ch)
     {
@@ -425,14 +492,32 @@ void MaxxBassAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     const int numCh = juce::jmin (buffer.getNumChannels(), 2);
     const int N     = buffer.getNumSamples();
     const int decimate = juce::jmax (1, juce::roundToInt (audioParams.SP_DECIMATE_FACTOR));
-    const int samplesPerBlock = N;  // MELHORIA v49: usado para interpolação do cutoff
 
-    for (int ch = 0; ch < numCh; ++ch)
+    // v50: Correção da decimação — LPFs e envelopes devem usar SR efetivo (currentSR / decimate)
+    // Chamadas de setup são caras: só executar quando os parâmetros realmente mudarem
+    const double detectorSR = currentSR / (double)decimate;
+    if (decimate            != cachedDecimate      ||
+        audioParams.SP_SUB_LPF_FREQ   != cachedSubLPFFreq  ||
+        audioParams.SP_BODY_LPF_FREQ  != cachedBodyLPFFreq ||
+        audioParams.SP_SUB_ENV_ATT_MS != cachedSubEnvAtt   ||
+        audioParams.SP_SUB_ENV_REL_MS != cachedSubEnvRel   ||
+        audioParams.SP_BODY_ENV_ATT_MS!= cachedBodyEnvAtt  ||
+        audioParams.SP_BODY_ENV_REL_MS!= cachedBodyEnvRel)
     {
-        subProtectSubLPF [ch].setLowPass (audioParams.SP_SUB_LPF_FREQ, currentSR);
-        subProtectBodyLPF[ch].setLowPass (audioParams.SP_BODY_LPF_FREQ, currentSR);
-        subProtectSubEnv [ch].setTimes (currentSR, audioParams.SP_SUB_ENV_ATT_MS,  audioParams.SP_SUB_ENV_REL_MS);
-        subProtectBodyEnv[ch].setTimes (currentSR, audioParams.SP_BODY_ENV_ATT_MS, audioParams.SP_BODY_ENV_REL_MS);
+        for (int ch = 0; ch < numCh; ++ch)
+        {
+            subProtectSubLPF [ch].setLowPass (audioParams.SP_SUB_LPF_FREQ,  detectorSR);
+            subProtectBodyLPF[ch].setLowPass (audioParams.SP_BODY_LPF_FREQ, detectorSR);
+            subProtectSubEnv [ch].setTimes (detectorSR, audioParams.SP_SUB_ENV_ATT_MS,  audioParams.SP_SUB_ENV_REL_MS);
+            subProtectBodyEnv[ch].setTimes (detectorSR, audioParams.SP_BODY_ENV_ATT_MS, audioParams.SP_BODY_ENV_REL_MS);
+        }
+        cachedDecimate     = decimate;
+        cachedSubLPFFreq   = audioParams.SP_SUB_LPF_FREQ;
+        cachedBodyLPFFreq  = audioParams.SP_BODY_LPF_FREQ;
+        cachedSubEnvAtt    = audioParams.SP_SUB_ENV_ATT_MS;
+        cachedSubEnvRel    = audioParams.SP_SUB_ENV_REL_MS;
+        cachedBodyEnvAtt   = audioParams.SP_BODY_ENV_ATT_MS;
+        cachedBodyEnvRel   = audioParams.SP_BODY_ENV_REL_MS;
     }
 
     auto smoothStep01 = [] (float x) noexcept
@@ -473,18 +558,16 @@ void MaxxBassAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     const float pressure     = smoothStep01 (juce::jlimit (0.0f, 1.0f, (subRatio - 0.48f) * 1.85f));
     const float aggressive   = smoothStep01 (juce::jlimit (0.0f, 1.0f, (subRatio - 0.98f) * 2.30f));
 
-    // MELHORIA v49: Usar parâmetros de lift reduzidos para manter adaptabilidade
-    // Antes: lifts hardcoded altos → cutoff sempre no teto
-    // Agora: lifts controlados por parâmetros ~40-50% menores → cutoff varia musicalmente
     const float baseCut     = juce::jmap (cutFreq, 20.0f, 300.0f,
                                           audioParams.SP_HPF_BASE_CUT,
                                           audioParams.SP_TARGET_CUT_MAX);
     const float musicLift   = juce::jmap (balanceSweet, 0.0f, 1.0f, 0.0f, audioParams.SP_MUSIC_LIFT_MAX);
     const float pressureLift= juce::jmap (pressure,     0.0f, 1.0f, 0.0f, audioParams.SP_PRESSURE_LIFT_MAX);
     const float hardLift    = juce::jmap (aggressive,   0.0f, 1.0f, 0.0f, audioParams.SP_HARD_LIFT_MAX);
-    const float driveLift   = juce::jmap (drive,   1.0f, 16.0f, 0.0f, audioParams.SP_DRIVE_LIFT_MAX);
-    const float mixLift     = juce::jmap (harmMix,  0.0f, 100.0f, 0.0f, audioParams.SP_MIX_LIFT_MAX);
-    const float gainLift    = juce::jmap (outputDb, -18.0f, 12.0f, 0.0f, audioParams.SP_GAIN_LIFT_MAX);
+    // v50: jmax(0) garante que nenhum lift vira negativo e reduz o cutoff abaixo do baseCut
+    const float driveLift   = juce::jmax (0.0f, juce::jmap (drive,    1.0f, 16.0f,   0.0f, audioParams.SP_DRIVE_LIFT_MAX));
+    const float mixLift     = juce::jmax (0.0f, juce::jmap (harmMix,  0.0f, 100.0f,  0.0f, audioParams.SP_MIX_LIFT_MAX));
+    const float gainLift    = juce::jmax (0.0f, juce::jmap (outputDb, -18.0f, 12.0f, 0.0f, audioParams.SP_GAIN_LIFT_MAX));
 
     const float rawTargetCut = juce::jlimit (audioParams.SP_TARGET_CUT_MIN,
                                              audioParams.SP_TARGET_CUT_MAX,
@@ -495,31 +578,29 @@ void MaxxBassAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
                                                     + mixLift   * 0.20f
                                                     + gainLift  * 0.20f);
 
-    // MELHORIA v49: Suavização do targetCut para evitar clicks/pop
-    // Interpolação linear ao longo de SP_CUTOFF_SMOOTH_MS
-    const int smoothTotalSamples = juce::roundToInt (audioParams.SP_CUTOFF_SMOOTH_MS * currentSR / 1000.0f);
-    
-    float finalTargetCut = rawTargetCut;
-    
-    if (smoothedTargetCut < 0.0f || smoothCounter >= smoothTotalSamples)
+    // v50: Suavização one-pole IIR — substitui interpolação linear com janela fixa
+    // Vantagens: sem snap periódico, sem overshoot por samplesPerBlock > smoothTotalSamples,
+    // rastreia target em movimento continuamente, independe do tamanho do bloco.
+    //
+    // coeff = 1 - exp(-N / (tau * SR))
+    //   N   = amostras por bloco
+    //   tau = tempo de suavização em segundos
+    //   SR  = sample rate
+    // coeff próximo de 0 → suavização lenta; próximo de 1 → quase sem suavização
     {
-        // Primeiro bloco ou suavização completada
-        smoothedTargetCut = rawTargetCut;
-        smoothCounter = 0;
-    }
-    else
-    {
-        // Interpolação em andamento
-        const float increment = (rawTargetCut - smoothedTargetCut) / (float)(smoothTotalSamples - smoothCounter);
-        smoothedTargetCut += increment * (float)samplesPerBlock;
-        smoothCounter = juce::jmin (smoothCounter + samplesPerBlock, smoothTotalSamples);
-        
-        // Clamp para evitar overshoot
-        smoothedTargetCut = juce::jlimit (audioParams.SP_TARGET_CUT_MIN, 
-                                          audioParams.SP_TARGET_CUT_MAX, 
+        const float tau   = juce::jmax (1.0f, audioParams.SP_CUTOFF_SMOOTH_MS) / 1000.0f;
+        const float coeff = 1.0f - std::exp (-(float)N / (tau * (float)currentSR));
+
+        if (smoothedTargetCut < 0.0f)
+            smoothedTargetCut = rawTargetCut;  // Inicializa no primeiro bloco (sem snap)
+        else
+            smoothedTargetCut += (rawTargetCut - smoothedTargetCut) * coeff;
+
+        smoothedTargetCut = juce::jlimit (audioParams.SP_TARGET_CUT_MIN,
+                                          audioParams.SP_TARGET_CUT_MAX,
                                           smoothedTargetCut);
-        finalTargetCut = smoothedTargetCut;
     }
+    const float finalTargetCut = smoothedTargetCut;
 
     // Atualiza filtros apenas quando houver mudança significativa (> 0.5 Hz para precisão)
     if (std::abs (finalTargetCut - lastSubCutFreq) > 0.5f)
@@ -563,7 +644,15 @@ void MaxxBassAudioProcessor::setStateInformation (const void* data, int sizeInBy
     {
         apvts.replaceState (juce::ValueTree::fromXml (*xml));
         refreshAdvancedParamsFromAPVTS();
-        lastSubCutFreq = -1.0f;
+        lastSubCutFreq    = -1.0f;
+        smoothedTargetCut = -1.0f;
+        cachedSubLPFFreq  = -1.0f;
+        cachedBodyLPFFreq = -1.0f;
+        cachedSubEnvAtt   = -1.0f;
+        cachedSubEnvRel   = -1.0f;
+        cachedBodyEnvAtt  = -1.0f;
+        cachedBodyEnvRel  = -1.0f;
+        cachedDecimate    = -1;
     }
 }
 
