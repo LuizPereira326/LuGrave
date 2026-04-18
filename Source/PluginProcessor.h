@@ -5,19 +5,11 @@
 #include "AdvancedParams.h"
 
 //==============================================================================
-//  MaxxBassAudioProcessor - v49 CORRIGIDO
+//  MaxxBassAudioProcessor - v50
 //  ----------------------
-//  CORREÇÃO v49: Sincronização simplificada
-//
-//  Todos os parâmetros avançados agora estão registrados no APVTS.
-//  O APVTS é a fonte única de verdade, sincronizado a cada bloco.
-//  Isso elimina a necessidade de double-buffer e SpinLock.
-//
 //  Gerencia dois motores de processamento intercambiáveis:
 //
 //    SIMPLE MODE  — crossover + drive + harmônicos Chebyshev com pesos BASE/RANGE.
-//                   Usa SE_H*_BASE e SE_H*__RANGE controlados pelo harmChar.
-//
 //    HYBRID MODE  — motor psicoacústico completo: pesos adaptativos,
 //                   controle dinâmico multi-banda, kick-detector.
 //
@@ -33,7 +25,7 @@ public:
     void releaseResources() override;
     void processBlock    (juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
 
-    // Sobrescreve o bypass do host: sem buffer.clear(), áudio passa intacto
+    // Bypass do host: áudio passa intacto, nada é processado
     void processBlockBypassed (juce::AudioBuffer<float>&, juce::MidiBuffer&) override {}
 
     juce::AudioProcessorEditor* createEditor() override;
@@ -57,8 +49,28 @@ public:
     static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
     void refreshAdvancedParamsFromAPVTS();
 
+    //==========================================================================
+    // v50: Preset / Undo-Redo
+    //==========================================================================
+    static const juce::Identifier advancedParamsTreeId;
+
+    void saveStateForUndo();
+    void savePresetToFile   (const juce::File& file);
+    void loadPresetFromFile (const juce::File& file);
+    void resetToFactoryDefaults();
+
+    // Callback para notificar a UI após load/reset de preset
+    std::function<void()> onPresetLoaded;
+
+    //==========================================================================
+    // ATENÇÃO: undoManager deve ser declarado ANTES de apvts.
+    // A inicialização inline de apvts usa &undoManager; a ordem de declaração
+    // determina a ordem de construção dos membros em C++.
+    //==========================================================================
+    juce::UndoManager undoManager;
+
     juce::AudioProcessorValueTreeState apvts {
-        *this, nullptr, "Parameters", createParameterLayout()
+        *this, &undoManager, "Parameters", createParameterLayout()
     };
 
     // Meters (lidos pela UI via timer)
@@ -66,12 +78,6 @@ public:
     std::atomic<float> outLevel  { 0 };
     std::atomic<float> harmMeter { 0 };
 
-    //==========================================================================
-    // CORREÇÃO v49: Parâmetros avançados sincronizados via APVTS
-    //==========================================================================
-    // Todos os parâmetros estão registrados no APVTS.
-    // audioParams é atualizado a cada processBlock() via syncAdvancedParamsFromApvts().
-    //==========================================================================
     AdvancedParams audioParams;
 
     double currentSR = 44100.0;
@@ -85,14 +91,26 @@ public:
     EnvFollower  subProtectBodyEnv [2];
 
     float lastSubCutFreq = -1.0f;
-    
-    // MELHORIA v49: Suavização do targetCut para evitar clicks/pop
-    float smoothedTargetCut = -1.0f;  // Valor atual interpolado
-    int   smoothCounter = 0;          // Contador para interpolação
+
+    // v50: Suavização one-pole IIR (-1 = não inicializado)
+    float smoothedTargetCut = -1.0f;
+
+    // v50: Cache dos parâmetros do detector (evita setLowPass/setTimes todo bloco)
+    float cachedSubLPFFreq   = -1.0f;
+    float cachedBodyLPFFreq  = -1.0f;
+    float cachedSubEnvAtt    = -1.0f;
+    float cachedSubEnvRel    = -1.0f;
+    float cachedBodyEnvAtt   = -1.0f;
+    float cachedBodyEnvRel   = -1.0f;
+    int   cachedDecimate     = -1;
 
 private:
     SimpleHarmonicEngine simpleEngine;
     HybridHarmonicEngine hybridEngine;
+
+    // v50: Snapshot capturado ANTES de cada operação undoável
+    juce::ValueTree undoStateBefore;
+    void commitUndoTransaction (const juce::String& actionName = "Parameter Change");
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MaxxBassAudioProcessor)
 };
