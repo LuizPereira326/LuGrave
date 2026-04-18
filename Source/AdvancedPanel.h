@@ -379,15 +379,19 @@ private:
     };
 
     //======================================================================
-    // PanelContent - main container with TabbedComponent
+    // PanelContent - main container with TabbedComponent + Toolbar
     //======================================================================
-    class PanelContent : public juce::Component
+    class PanelContent : public juce::Component,
+                         public juce::ToolbarItemFactory
     {
     public:
-        // CORREÇÃO v49: Construtor simplificado
+        // NOVIDADE v50: Construtor com toolbar de presets e undo/redo
         PanelContent (AdvancedParams& p, juce::AudioProcessorValueTreeState* state, bool isSimpleMode)
             : params (p), apvtsState (state)
         {
+            // Configurar toolbar
+            setupToolbar();
+            
             infoLabel.setColour (juce::Label::textColourId, juce::Colour (0xFFFFB080));
             infoLabel.setFont (juce::FontOptions (12.0f));
             infoLabel.setJustificationType (juce::Justification::centredLeft);
@@ -397,10 +401,11 @@ private:
                                 : "Modo HYBRID ativo. Controles BASE/RANGE afetam o motor Hibrido.",
                                juce::dontSendNotification);
             addAndMakeVisible (infoLabel);
+            addAndMakeVisible (toolbar);
             addAndMakeVisible (tabbedComponent);
             buildTabs();
             tabbedComponent.setCurrentTabIndex (isSimpleMode ? 0 : 2);
-            setSize (700, 540);
+            setSize (700, 600); // Aumentado para acomodar toolbar
         }
 
         void paint (juce::Graphics& g) override
@@ -412,6 +417,7 @@ private:
         {
             auto area = getLocalBounds().reduced (6);
             infoLabel.setBounds (area.removeFromTop (26));
+            toolbar.setBounds (area.removeFromTop (40));
             tabbedComponent.setBounds (area);
         }
 
@@ -419,7 +425,184 @@ private:
         AdvancedParams& params;
         juce::AudioProcessorValueTreeState* apvtsState = nullptr;
         juce::Label infoLabel;
+        juce::Toolbar toolbar;
         juce::TabbedComponent tabbedComponent { juce::TabbedButtonBar::Orientation::TabsAtTop };
+        
+        //======================================================================
+        void setupToolbar()
+        {
+            toolbar.setStyle (juce::Toolbar::ToolbarStyle::iconsOnly);
+            toolbar.addDefaultItems (*this);
+        }
+        
+        //======================================================================
+        // ToolbarItemFactory implementation
+        //======================================================================
+        juce::ToolbarItemComponent* createItem (int itemId) override
+        {
+            juce::String name, tooltip;
+            juce::Colour colour;
+            
+            switch (itemId)
+            {
+                case 1: name = "Undo";       tooltip = "Desfazer (Ctrl+Z)"; colour = juce::Colours::orange; break;
+                case 2: name = "Redo";       tooltip = "Refazer (Ctrl+Y)"; colour = juce::Colours::lightgreen; break;
+                case 3: name = "Save";       tooltip = "Salvar preset";     colour = juce::Colours::skyblue; break;
+                case 4: name = "Load";       tooltip = "Carregar preset";   colour = juce::Colours::cyan; break;
+                case 5: name = "Reset";      tooltip = "Resetar padrao";    colour = juce::Colours::red; break;
+                default: return nullptr;
+            }
+            
+            auto* btn = new juce::ToolbarButton (name, tooltip, createIcon (itemId, colour), *this);
+            btn->setTooltip (tooltip);
+            return btn;
+        }
+        
+        // Criar ícone simples desenhado programaticamente
+        std::unique_ptr<juce::Drawable> createIcon (int itemId, juce::Colour col)
+        {
+            auto shape = std::make_unique<juce::DrawableRectangle>();
+            shape->setFill (col);
+            
+            juce::Rectangle<float> bounds (0, 0, 24, 24);
+            
+            // Desenhar formas diferentes para cada botão
+            switch (itemId)
+            {
+                case 1: // Undo - seta esquerda
+                {
+                    auto path = juce::Path();
+                    path.startNewSubPath (16, 4);
+                    path.lineTo (8, 12);
+                    path.lineTo (16, 20);
+                    path.lineTo (14, 22);
+                    path.lineTo (4, 12);
+                    path.lineTo (14, 2);
+                    path.closeSubPath();
+                    
+                    auto* drawablePath = new juce::DrawablePath();
+                    drawablePath->setPath (path);
+                    drawablePath->setFill (col);
+                    return std::unique_ptr<juce::Drawable> (drawablePath);
+                }
+                case 2: // Redo - seta direita
+                {
+                    auto path = juce::Path();
+                    path.startNewSubPath (8, 4);
+                    path.lineTo (16, 12);
+                    path.lineTo (8, 20);
+                    path.lineTo (10, 22);
+                    path.lineTo (20, 12);
+                    path.lineTo (10, 2);
+                    path.closeSubPath();
+                    
+                    auto* drawablePath = new juce::DrawablePath();
+                    drawablePath->setPath (path);
+                    drawablePath->setFill (col);
+                    return std::unique_ptr<juce::Drawable> (drawablePath);
+                }
+                case 3: // Save - disquete
+                {
+                    auto path = juce::Path();
+                    path.addRectangle (4, 2, 16, 20);
+                    path.addRectangle (8, 14, 8, 6);
+                    path.addRectangle (6, 4, 8, 6);
+                    
+                    auto* drawablePath = new juce::DrawablePath();
+                    drawablePath->setPath (path);
+                    drawablePath->setFill (col);
+                    return std::unique_ptr<juce::Drawable> (drawablePath);
+                }
+                case 4: // Load - pasta
+                {
+                    auto path = juce::Path();
+                    path.startNewSubPath (2, 6);
+                    path.lineTo (2, 18);
+                    path.lineTo (22, 18);
+                    path.lineTo (22, 6);
+                    path.lineTo (12, 6);
+                    path.lineTo (10, 4);
+                    path.lineTo (2, 4);
+                    path.closeSubPath();
+                    
+                    auto* drawablePath = new juce::DrawablePath();
+                    drawablePath->setPath (path);
+                    drawablePath->setFill (col);
+                    return std::unique_ptr<juce::Drawable> (drawablePath);
+                }
+                case 5: // Reset - lixa/círculo com X
+                {
+                    auto path = juce::Path();
+                    path.addEllipse (4, 4, 16, 16);
+                    
+                    auto* drawablePath = new juce::DrawablePath();
+                    drawablePath->setPath (path);
+                    drawablePath->setFill (col);
+                    return std::unique_ptr<juce::Drawable> (drawablePath);
+                }
+                default:
+                    return nullptr;
+            }
+        }
+        
+        void getAllToolbarItemIds (juce::Array<int>& ids) override
+        {
+            ids.addArray ({1, 2, 3, 4, 5}); // Undo, Redo, Save, Load, Reset
+        }
+        
+        void toolbarItemClicked (int itemId) override
+        {
+            if (apvtsState == nullptr)
+                return;
+                
+            auto* processor = dynamic_cast<MaxxBassAudioProcessor*> (apvtsState->processor);
+            if (processor == nullptr)
+                return;
+            
+            switch (itemId)
+            {
+                case 1: // Undo
+                    if (processor->canUndo())
+                        processor->performUndo();
+                    break;
+                case 2: // Redo
+                    if (processor->canRedo())
+                        processor->performRedo();
+                    break;
+                case 3: // Save Preset
+                {
+                    juce::FileChooser chooser ("Salvar Preset",
+                                               juce::File::getSpecialLocation (juce::File::userDocumentsDirectory),
+                                               "*.maxxbasspreset", true);
+                    if (chooser.browseForFileToSave (true))
+                        processor->savePresetToFile (chooser.getResult());
+                    break;
+                }
+                case 4: // Load Preset
+                {
+                    juce::FileChooser chooser ("Carregar Preset",
+                                               juce::File::getSpecialLocation (juce::File::userDocumentsDirectory),
+                                               "*.maxxbasspreset", true);
+                    if (chooser.browseForFileToOpen (true))
+                        processor->loadPresetFromFile (chooser.getResult());
+                    break;
+                }
+                case 5: // Reset
+                {
+                    juce::AlertWindow::showMessageBoxAsync (juce::AlertWindow::WarningIcon,
+                                                            "Resetar Parametros",
+                                                            "Tem certeza que deseja resetar TODOS os parametros para os valores padrao de fabrica?",
+                                                            "Cancelar|Resetar",
+                                                            nullptr,
+                                                            [processor] (int result)
+                                                            {
+                                                                if (result == 2)
+                                                                    processor->resetToFactoryDefaults();
+                                                            });
+                    break;
+                }
+            }
+        }
 
         //======================================================================
         void buildTabs()

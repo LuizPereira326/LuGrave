@@ -1,0 +1,100 @@
+==============================================================================
+NOVIDADES v50 - SISTEMA DE PRESETS, UNDO/REDO E RESET
+==============================================================================
+
+RESUMO DAS MUDANCAS:
+--------------------
+Esta versao adiciona gerenciamento completo de estado ao painel Advanced Parameters,
+permitindo salvar/carregar presets, desfazer/refazer alteracoes e resetar para 
+valores de fabrica.
+
+ARQUIVOS MODIFICADOS:
+---------------------
+1. PluginProcessor.h
+   - Adicionado: juce::UndoManager undoManager (historico de 10 estados)
+   - Adicionado: static const Identifier advancedParamsTreeId
+   - Adicionados metodos: saveStateForUndo(), savePresetToFile(), loadPresetFromFile(), 
+     resetToFactoryDefaults(), canUndo(), canRedo(), performUndo(), performRedo()
+   - Adicionados callbacks: onPresetLoaded, onUndoRedoPerformed
+
+2. PluginProcessor.cpp
+   - Implementacao completa dos metodos de gerenciamento de estado
+   - saveStateForUndo(): Salva estado atual no UndoManager usando ValueTree
+   - savePresetToFile(): Exporta estado para arquivo XML (.maxxbasspreset)
+   - loadPresetFromFile(): Importa estado de arquivo XML
+   - resetToFactoryDefaults(): Restaura todos os parametros aos valores default
+
+3. AdvancedPanel.h
+   - PanelContent agora herda de juce::ToolbarItemFactory
+   - Adicionada Toolbar com 5 botoes:
+     * Undo (laranja) - Desfazer ultima alteracao
+     * Redo (verde) - Refazer alteracao desfeita
+     * Save (azul claro) - Salvar preset em arquivo
+     * Load (ciano) - Carregar preset de arquivo
+     * Reset (vermelho) - Resetar para padrao de fabrica
+   - Icones desenhados programaticamente (sem dependencia de assets externos)
+   - Dialogo de confirmacao para reset
+
+COMO USAR:
+----------
+
+1. UNDO (Ctrl+Z):
+   - Clique no botao laranja com seta para esquerda
+   - Desfaz a ultima alteracao feita nos parametros
+   - Historico de ate 10 transacoes
+
+2. REDO (Ctrl+Y):
+   - Clique no botao verde com seta para direita
+   - Refaz uma alteracao que foi desfeita
+
+3. SALVAR PRESET:
+   - Clique no botao azul claro (icone de disquete)
+   - Escolha local e nome do arquivo (.maxxbasspreset)
+   - O arquivo contem TODOS os parametros atuais em formato XML
+
+4. CARREGAR PRESET:
+   - Clique no botao ciano (icone de pasta)
+   - Selecione um arquivo .maxxbasspreset
+   - Todos os parametros sao atualizados instantaneamente
+   - Filtros sao resetados para evitar clicks
+
+5. RESET PARA FABRICA:
+   - Clique no botao vermelho (circulo)
+   - Confirme no dialogo de alerta
+   - Todos os parametros voltam aos valores originais de fabrica
+
+DETALHES TECNICOS:
+------------------
+
+- UndoManager usa ValueTree para armazenar snapshots dos parametros
+- Cada alteracao significativa cria uma nova transacao no historico
+- Presets sao arquivos XML legiveis e portaveis
+- Callbacks onPresetLoaded e onUndoRedoPerformed permitem notificacao da UI
+- Reset tambem salva estado anterior no UndoManager (pode desfazer o reset)
+
+FORMATO DO ARQUIVO PRESET:
+---------------------------
+<?xml version="1.0" encoding="UTF-8"?>
+<Parameters>
+  <SE_H2_BASE value="0.5"/>
+  <SE_H2_RANGE value="0.3"/>
+  ...
+  <SP_CUTOFF_SMOOTH_MS value="150.0"/>
+</Parameters>
+
+NOTAS IMPORTANTES:
+------------------
+- Atalhos de teclado (Ctrl+Z/Ctrl+Y) ainda nao estao implementados
+- Presets sao especificos da versao do plugin
+- Undo/Redo so funciona enquanto o plugin estiver aberto (nao persiste entre sessoes)
+- Arquivos de preset podem ser compartilhados entre usuarios
+
+PROXIMAS MELHORIAS SUGERIDAS:
+-----------------------------
+- Adicionar atalhos de teclado globais
+- Menu dropdown com lista de presets recentes
+- Banco de presets integrado (factory presets)
+- Undo/Redo persistente entre sessoes
+- Comparacao A/B de presets
+
+==============================================================================
