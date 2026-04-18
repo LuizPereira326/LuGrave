@@ -1,6 +1,94 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
 
+// Definição do ID estático para o ValueTree de parâmetros avançados
+const juce::Identifier MaxxBassAudioProcessor::advancedParamsTreeId { "AdvancedParams" };
+
+//==============================================================================
+// NOVIDADE v50: Métodos de gerenciamento de estado (Undo/Redo, Presets, Reset)
+//==============================================================================
+
+void MaxxBassAudioProcessor::saveStateForUndo()
+{
+    // Criar um ValueTree com o estado atual de todos os parâmetros
+    juce::ValueTree stateTree (advancedParamsTreeId);
+    
+    // Salvar todos os parâmetros do APVTS
+    for (int i = 0; i < apvts.parameters.size(); ++i)
+    {
+        auto* param = apvts.parameters[i];
+        if (param != nullptr)
+            stateTree.setProperty (param->paramID, param->getValue(), nullptr);
+    }
+    
+    // Adicionar ao UndoManager
+    undoManager.beginNewTransaction();
+    undoManager.perform (new juce::UndoableValueTree ("Parameter Change", stateTree, apvts.state, nullptr));
+}
+
+void MaxxBassAudioProcessor::savePresetToFile (const juce::File& file)
+{
+    // Criar XML com estado atual
+    auto xml = apvts.state.createXml();
+    if (xml != nullptr)
+    {
+        xml->writeTo (file);
+        saveStateForUndo(); // Salvar ponto de undo após salvar preset
+    }
+}
+
+void MaxxBassAudioProcessor::loadPresetFromFile (const juce::File& file)
+{
+    if (!file.existsAsFile())
+        return;
+    
+    auto xml = juce::XMLDocument::parse (file);
+    if (xml != nullptr && xml->hasTagName (apvts.state.getType()))
+    {
+        auto newState = juce::ValueTree::fromXml (*xml);
+        apvts.replaceState (newState);
+        refreshAdvancedParamsFromAPVTS();
+        
+        // Resetar filtros para evitar clicks
+        lastSubCutFreq = -1.0f;
+        smoothedTargetCut = -1.0f;
+        smoothCounter = 0;
+        
+        // Notificar UI
+        if (onPresetLoaded != nullptr)
+            onPresetLoaded();
+            
+        saveStateForUndo(); // Salvar ponto de undo após carregar preset
+    }
+}
+
+void MaxxBassAudioProcessor::resetToFactoryDefaults()
+{
+    saveStateForUndo(); // Salvar estado anterior para undo
+    
+    // Resetar todos os parâmetros para valores default
+    for (auto* param : apvts.parameters)
+    {
+        if (param != nullptr)
+        {
+            auto* ranged = dynamic_cast<juce::RangedAudioParameter*> (param);
+            if (ranged != nullptr)
+                ranged->setValueNotifyingHost (ranged->getDefaultValue());
+        }
+    }
+    
+    refreshAdvancedParamsFromAPVTS();
+    
+    // Resetar filtros
+    lastSubCutFreq = -1.0f;
+    smoothedTargetCut = -1.0f;
+    smoothCounter = 0;
+    
+    // Notificar UI
+    if (onPresetLoaded != nullptr)
+        onPresetLoaded();
+}
+
 static void syncAdvancedParamsFromApvts (juce::AudioProcessorValueTreeState& apvts, AdvancedParams& params)
 {
     #define SYNC_ADV(name) if (auto* value = apvts.getRawParameterValue (#name)) params.name = value->load();
