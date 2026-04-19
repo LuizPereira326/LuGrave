@@ -1,6 +1,7 @@
 #pragma once
 #include <JuceHeader.h>
 #include "AdvancedParams.h"
+#include "PluginProcessor.h"
 
 //==============================================================================
 // ParamDef - shared parameter definition struct
@@ -379,17 +380,17 @@ private:
     };
 
     //======================================================================
-    // PanelContent - main container with TabbedComponent + Toolbar
+    // PanelContent - main container with TabbedComponent + Toolbar (CORREÇÃO JUCE v7+)
     //======================================================================
-    class PanelContent : public juce::Component,
-                         public juce::ToolbarItemFactory
+    class PanelContent : public juce::Component
     {
     public:
         // NOVIDADE v50: Construtor com toolbar de presets e undo/redo
+        // CORREÇÃO JUCE v7+: Toolbar substituído por botões TextButton
         PanelContent (AdvancedParams& p, juce::AudioProcessorValueTreeState* state, bool isSimpleMode)
             : params (p), apvtsState (state)
         {
-            // Configurar toolbar
+            // Configurar barra de botões
             setupToolbar();
             
             infoLabel.setColour (juce::Label::textColourId, juce::Colour (0xFFFFB080));
@@ -401,11 +402,11 @@ private:
                                 : "Modo HYBRID ativo. Controles BASE/RANGE afetam o motor Hibrido.",
                                juce::dontSendNotification);
             addAndMakeVisible (infoLabel);
-            addAndMakeVisible (toolbar);
+            addAndMakeVisible (toolbarContainer);
             addAndMakeVisible (tabbedComponent);
             buildTabs();
             tabbedComponent.setCurrentTabIndex (isSimpleMode ? 0 : 2);
-            setSize (700, 600); // Aumentado para acomodar toolbar
+            setSize (700, 600);
         }
 
         void paint (juce::Graphics& g) override
@@ -417,7 +418,7 @@ private:
         {
             auto area = getLocalBounds().reduced (6);
             infoLabel.setBounds (area.removeFromTop (26));
-            toolbar.setBounds (area.removeFromTop (40));
+            toolbarContainer.setBounds (area.removeFromTop (40));
             tabbedComponent.setBounds (area);
         }
 
@@ -425,137 +426,47 @@ private:
         AdvancedParams& params;
         juce::AudioProcessorValueTreeState* apvtsState = nullptr;
         juce::Label infoLabel;
-        juce::Toolbar toolbar;
+        juce::Component toolbarContainer;
+        juce::OwnedArray<juce::TextButton> toolbarButtons;
         juce::TabbedComponent tabbedComponent { juce::TabbedButtonBar::Orientation::TabsAtTop };
         
         //======================================================================
         void setupToolbar()
         {
-            toolbar.setStyle (juce::Toolbar::ToolbarStyle::iconsOnly);
-            toolbar.addDefaultItems (*this);
-        }
-        
-        //======================================================================
-        // ToolbarItemFactory implementation
-        //======================================================================
-        juce::ToolbarItemComponent* createItem (int itemId) override
-        {
-            juce::String name, tooltip;
-            juce::Colour colour;
+            // CORREÇÃO JUCE v7+: Usar TextButton ao invés de Toolbar/ToolbarButton
+            const struct ButtonDef { int id; const char* label; const char* tooltip; juce::Colour colour; }
+            buttons[] = {
+                { 1, "Undo",  "Desfazer (Ctrl+Z)",  juce::Colours::orange },
+                { 2, "Redo",  "Refazer (Ctrl+Y)",   juce::Colours::lightgreen },
+                { 3, "Save",  "Salvar preset",      juce::Colours::skyblue },
+                { 4, "Load",  "Carregar preset",    juce::Colours::cyan },
+                { 5, "Reset", "Resetar padrao",     juce::Colours::red }
+            };
             
-            switch (itemId)
+            int x = 8, y = 8, btnW = 70, btnH = 28, gap = 8;
+            for (auto& def : buttons)
             {
-                case 1: name = "Undo";       tooltip = "Desfazer (Ctrl+Z)"; colour = juce::Colours::orange; break;
-                case 2: name = "Redo";       tooltip = "Refazer (Ctrl+Y)"; colour = juce::Colours::lightgreen; break;
-                case 3: name = "Save";       tooltip = "Salvar preset";     colour = juce::Colours::skyblue; break;
-                case 4: name = "Load";       tooltip = "Carregar preset";   colour = juce::Colours::cyan; break;
-                case 5: name = "Reset";      tooltip = "Resetar padrao";    colour = juce::Colours::red; break;
-                default: return nullptr;
-            }
-            
-            auto* btn = new juce::ToolbarButton (name, tooltip, createIcon (itemId, colour), *this);
-            btn->setTooltip (tooltip);
-            return btn;
-        }
-        
-        // Criar ícone simples desenhado programaticamente
-        std::unique_ptr<juce::Drawable> createIcon (int itemId, juce::Colour col)
-        {
-            auto shape = std::make_unique<juce::DrawableRectangle>();
-            shape->setFill (col);
-            
-            juce::Rectangle<float> bounds (0, 0, 24, 24);
-            
-            // Desenhar formas diferentes para cada botão
-            switch (itemId)
-            {
-                case 1: // Undo - seta esquerda
-                {
-                    auto path = juce::Path();
-                    path.startNewSubPath (16, 4);
-                    path.lineTo (8, 12);
-                    path.lineTo (16, 20);
-                    path.lineTo (14, 22);
-                    path.lineTo (4, 12);
-                    path.lineTo (14, 2);
-                    path.closeSubPath();
-                    
-                    auto* drawablePath = new juce::DrawablePath();
-                    drawablePath->setPath (path);
-                    drawablePath->setFill (col);
-                    return std::unique_ptr<juce::Drawable> (drawablePath);
-                }
-                case 2: // Redo - seta direita
-                {
-                    auto path = juce::Path();
-                    path.startNewSubPath (8, 4);
-                    path.lineTo (16, 12);
-                    path.lineTo (8, 20);
-                    path.lineTo (10, 22);
-                    path.lineTo (20, 12);
-                    path.lineTo (10, 2);
-                    path.closeSubPath();
-                    
-                    auto* drawablePath = new juce::DrawablePath();
-                    drawablePath->setPath (path);
-                    drawablePath->setFill (col);
-                    return std::unique_ptr<juce::Drawable> (drawablePath);
-                }
-                case 3: // Save - disquete
-                {
-                    auto path = juce::Path();
-                    path.addRectangle (4, 2, 16, 20);
-                    path.addRectangle (8, 14, 8, 6);
-                    path.addRectangle (6, 4, 8, 6);
-                    
-                    auto* drawablePath = new juce::DrawablePath();
-                    drawablePath->setPath (path);
-                    drawablePath->setFill (col);
-                    return std::unique_ptr<juce::Drawable> (drawablePath);
-                }
-                case 4: // Load - pasta
-                {
-                    auto path = juce::Path();
-                    path.startNewSubPath (2, 6);
-                    path.lineTo (2, 18);
-                    path.lineTo (22, 18);
-                    path.lineTo (22, 6);
-                    path.lineTo (12, 6);
-                    path.lineTo (10, 4);
-                    path.lineTo (2, 4);
-                    path.closeSubPath();
-                    
-                    auto* drawablePath = new juce::DrawablePath();
-                    drawablePath->setPath (path);
-                    drawablePath->setFill (col);
-                    return std::unique_ptr<juce::Drawable> (drawablePath);
-                }
-                case 5: // Reset - lixa/círculo com X
-                {
-                    auto path = juce::Path();
-                    path.addEllipse (4, 4, 16, 16);
-                    
-                    auto* drawablePath = new juce::DrawablePath();
-                    drawablePath->setPath (path);
-                    drawablePath->setFill (col);
-                    return std::unique_ptr<juce::Drawable> (drawablePath);
-                }
-                default:
-                    return nullptr;
+                auto* btn = new juce::TextButton (def.label);
+                btn->setTooltip (def.tooltip);
+                btn->setColour (juce::TextButton::buttonColourId, def.colour.withAlpha (0.85f));
+                btn->setColour (juce::TextButton::buttonOnColourId, def.colour);
+                btn->setColour (juce::TextButton::textColourOffId, juce::Colours::white);
+                btn->onClick = [this, id = def.id]() { handleToolbarAction (id); };
+                
+                toolbarButtons.add (btn);
+                toolbarContainer.addAndMakeVisible (btn);
+                btn->setBounds (x, y, btnW, btnH);
+                x += btnW + gap;
             }
         }
         
-        void getAllToolbarItemIds (juce::Array<int>& ids) override
-        {
-            ids.addArray ({1, 2, 3, 4, 5}); // Undo, Redo, Save, Load, Reset
-        }
-        
-        void toolbarItemClicked (int itemId) override
+        // CORREÇÃO JUCE v7+: Handler de ações da toolbar com FileChooser assíncrono
+        void handleToolbarAction (int itemId)
         {
             if (apvtsState == nullptr)
                 return;
                 
-            auto* processor = dynamic_cast<MaxxBassAudioProcessor*> (apvtsState->processor);
+            auto* processor = dynamic_cast<MaxxBassAudioProcessor*> (&apvtsState->processor);
             if (processor == nullptr)
                 return;
             
@@ -569,22 +480,32 @@ private:
                     if (processor->canRedo())
                         processor->performRedo();
                     break;
-                case 3: // Save Preset
+                case 3: // Save Preset - CORREÇÃO: usar launchAsync ao invés de browseForFileToSave
                 {
-                    juce::FileChooser chooser ("Salvar Preset",
-                                               juce::File::getSpecialLocation (juce::File::userDocumentsDirectory),
-                                               "*.maxxbasspreset", true);
-                    if (chooser.browseForFileToSave (true))
-                        processor->savePresetToFile (chooser.getResult());
+                    auto chooser = std::make_shared<juce::FileChooser> ("Salvar Preset",
+                                                 juce::File::getSpecialLocation (juce::File::userDocumentsDirectory),
+                                                 "*.maxxbasspreset");
+                    chooser->launchAsync (juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::warnAboutOverwriting,
+                        [chooser, processor] (const juce::FileChooser& fc)
+                        {
+                            auto result = fc.getResult();
+                            if (result != juce::File{})
+                                processor->savePresetToFile (result);
+                        });
                     break;
                 }
-                case 4: // Load Preset
+                case 4: // Load Preset - CORREÇÃO: usar launchAsync ao invés de browseForFileToOpen
                 {
-                    juce::FileChooser chooser ("Carregar Preset",
-                                               juce::File::getSpecialLocation (juce::File::userDocumentsDirectory),
-                                               "*.maxxbasspreset", true);
-                    if (chooser.browseForFileToOpen (true))
-                        processor->loadPresetFromFile (chooser.getResult());
+                    auto chooser = std::make_shared<juce::FileChooser> ("Carregar Preset",
+                                                 juce::File::getSpecialLocation (juce::File::userDocumentsDirectory),
+                                                 "*.maxxbasspreset");
+                    chooser->launchAsync (juce::FileBrowserComponent::openMode,
+                        [chooser, processor] (const juce::FileChooser& fc)
+                        {
+                            auto result = fc.getResult();
+                            if (result != juce::File{})
+                                processor->loadPresetFromFile (result);
+                        });
                     break;
                 }
                 case 5: // Reset

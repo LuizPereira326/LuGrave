@@ -7,8 +7,6 @@
 *.so
 *.a
 *.out
-build/
-dist/
 
 # Dependencies
 node_modules/
@@ -34,7 +32,7 @@ target/
 .vscode/
 .idea/
 
-# System files
-.DS_Store
-Thumbs.db
+# Build directories
+build/
+dist/
 ```
