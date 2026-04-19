@@ -11,6 +11,8 @@ void HybridHarmonicEngine::prepare (double sampleRate, int maxSamplesPerBlock, A
     lastLPFFreq = -1.0f;
     lastDynRampSec = -1.0f;
     lastSmoothRampSec = -1.0f;
+    for (int i = 0; i < MAX_CH; ++i)
+        lastCrossoverForPhase[i] = -1.0f;
 
     // OTIMIZAÇÃO v47: Calcular tamanho de sub-bloco para time-slicing
     subBlockSize = juce::jmin(64, maxSamplesPerBlock);
@@ -143,6 +145,7 @@ void HybridHarmonicEngine::reset()
         prevBlockEnvAvg[i]  = 0.0f;
         cachedVocalDetected[i] = false;
         cachedVocalScore[i] = 0.0f;
+        lastCrossoverForPhase[i] = -1.0f;
     }
     dynSmooth.setCurrentAndTargetValue (0.50f);
     harmToneSmooth.setCurrentAndTargetValue (1.0f);
@@ -254,8 +257,20 @@ void HybridHarmonicEngine::processBlock (juce::AudioBuffer<float>& buffer,
                            apvts.getRawParameterValue("outputGain")->load());
     const float harmChar = apvts.getRawParameterValue("harmChar")->load() * 0.01f;
 
+    updateSmoothing (params);
+
     dynSmooth.setTargetValue (apvts.getRawParameterValue("dynResp")->load() * 0.01f);
-    const float dynamicAmount = dynSmooth.getNextValue();
+    splitFreqSmooth.setTargetValue (params.SBS_SPLIT_FREQ);
+
+    float* dynAmountData = paramBuf.getWritePointer (0);
+    float* splitFreqData = paramBuf.getWritePointer (1);
+    float* toneGainData  = paramBuf.getWritePointer (2);
+
+    for (int i = 0; i < N; ++i)
+    {
+        dynAmountData[i] = dynSmooth.getNextValue();
+        splitFreqData[i] = splitFreqSmooth.getNextValue();
+    }
 
     // CORREÇÃO v50: configurar BL_* e SN_* em tempo real a cada bloco
     for (int ch = 0; ch < numCh; ++ch)
@@ -340,17 +355,17 @@ void HybridHarmonicEngine::processBlock (juce::AudioBuffer<float>& buffer,
     const float defaultH4 = defaultParams.HE_H4_BASE + harmChar * defaultParams.HE_H4_RANGE;
     const float defaultH5 = defaultParams.HE_H5_BASE + harmChar * defaultParams.HE_H5_RANGE;
     const float defaultWeightAvg = (defaultH2 + defaultH3 + defaultH4 + defaultH5) * 0.25f;
-    const float currentWeightAvg = (h2Weight + h3Weight + h4Weight + h5Weight) * 0.25f;
-    const float harmonicWeightGain = juce::jlimit (0.20f, 3.00f,
-                                                   currentWeightAvg / juce::jmax (0.01f, defaultWeightAvg));
-    const float bassFocusGain = juce::jlimit (0.75f, 3.00f, h2Weight / juce::jmax (0.05f, defaultH2));
-    const float oddHarshness = juce::jlimit (0.0f, 1.0f,
-                                             (h3Weight + h4Weight + h5Weight)
-                                             / juce::jmax (0.05f, h2Weight + h3Weight + h4Weight + h5Weight));
-    const float tunedH2Weight = h2Weight * 1.90f;
-    const float tunedH3Weight = h3Weight * 0.75f;
-    const float tunedH4Weight = h4Weight * 0.38f;
-    const float tunedH5Weight = h5Weight * 0.18f;
+    float currentWeightAvg = (h2Weight + h3Weight + h4Weight + h5Weight) * 0.25f;
+    float harmonicWeightGain = juce::jlimit (0.20f, 3.00f,
+                                             currentWeightAvg / juce::jmax (0.01f, defaultWeightAvg));
+    float bassFocusGain = juce::jlimit (0.75f, 3.00f, h2Weight / juce::jmax (0.05f, defaultH2));
+    float oddHarshness = juce::jlimit (0.0f, 1.0f,
+                                       (h3Weight + h4Weight + h5Weight)
+                                       / juce::jmax (0.05f, h2Weight + h3Weight + h4Weight + h5Weight));
+    float tunedH2Weight = h2Weight * 1.90f;
+    float tunedH3Weight = h3Weight * 0.75f;
+    float tunedH4Weight = h4Weight * 0.38f;
+    float tunedH5Weight = h5Weight * 0.18f;
     const float chebyT2Scale = ChebyshevGen::T2_SCALE * (params.CH_T2_SCALE / defaultParams.CH_T2_SCALE);
     const float chebyT3Clamp = ChebyshevGen::T3_LIMIT * (params.CH_T3_CLAMP / defaultParams.CH_T3_CLAMP);
     const float chebyT4Clamp = ChebyshevGen::T4_LIMIT * (params.CH_T4_CLAMP / defaultParams.CH_T4_CLAMP);
@@ -369,62 +384,26 @@ void HybridHarmonicEngine::processBlock (juce::AudioBuffer<float>& buffer,
     const float spectralTiltGain = juce::jlimit (0.35f, 2.40f,
                                                  juce::jmax (120.0f, spectralFixedLPF)
                                                  / juce::jmax (90.0f, spectralTop));
-    const float toneTargetGain = juce::jlimit (0.10f, 6.00f,
-                                               harmonicWeightGain
-                                               * bassFocusGain
-                                               * spectralWindowGain
-                                               * lowEndFocusGain
-                                               * spectralTiltGain);
-    harmToneSmooth.setTargetValue (toneTargetGain);
+    float toneTargetGain = juce::jlimit (0.10f, 6.00f,
+                                         harmonicWeightGain
+                                         * bassFocusGain
+                                         * spectralWindowGain
+                                         * lowEndFocusGain
+                                         * spectralTiltGain);
 
-    // ========================================================================
-    // OTIMIZAÇÃO v47: Cache de decisão vocal UMA VEZ por bloco
-    // ========================================================================
-    bool anyVocalDetected = false;
-    float maxVocalScore = 0.0f;
-    int weightSourceCh = 0;
-    
+    float inPeak = 0.0f, outPeak = 0.0f, hPeak = 0.0f;
+
+    updateFilters (cutFreq, params);
+
     if (useDeepVocalProtection)
     {
         for (int ch = 0; ch < numCh; ++ch)
         {
-            if (deepVocalProtector[ch].isVocalDetected())
+            if (std::abs (cutFreq - lastCrossoverForPhase[ch]) > 1.0f)
             {
-                anyVocalDetected = true;
-                const float score = deepVocalProtector[ch].getVocalScore();
-                if (score > maxVocalScore)
-                {
-                    maxVocalScore = score;
-                    weightSourceCh = ch;
-                }
+                deepVocalProtector[ch].phaseShifter.updateFrequencies (cutFreq, currentSR);
+                lastCrossoverForPhase[ch] = cutFreq;
             }
-        }
-        
-        // Pesos adaptativos - calculados UMA VEZ
-        if (anyVocalDetected)
-        {
-            deepVocalProtector[weightSourceCh].getAdaptiveWeights (
-                h2Weight, h3Weight, h4Weight, h5Weight,
-                h2Weight, h3Weight, h4Weight, h5Weight);
-        }
-    }
-
-    float inPeak = 0.0f, outPeak = 0.0f, hPeak = 0.0f;
-
-    updateSmoothing (params);
-    updateFilters (cutFreq, params);
-
-    // v51: SBS_SPLIT_FREQ com ramp de 50 ms — evita zipper noise e cliques
-    // ao automatizar ou mexer no parâmetro em tempo real.
-    splitFreqSmooth.setTargetValue (params.SBS_SPLIT_FREQ);
-    splitFreqSmooth.skip (N);
-    {
-        const float smoothedSplit = splitFreqSmooth.getCurrentValue();
-        if (std::abs (smoothedSplit - lastSplitFreq) >= 0.1f)
-        {
-            lastSplitFreq = smoothedSplit;
-            for (int ch = 0; ch < numCh; ++ch)
-                subSplit[ch].setSplitFreq (smoothedSplit, currentSR);
         }
     }
 
@@ -464,12 +443,6 @@ void HybridHarmonicEngine::processBlock (juce::AudioBuffer<float>& buffer,
                     deepVocalProtector[ch].analyzeBass (bass);
                 }
 
-                if (useDeepVocalProtection && std::abs(cutFreq - lastCrossoverForPhase) > 1.0f)
-                {
-                    deepVocalProtector[ch].phaseShifter.updateFrequencies (cutFreq, currentSR);
-                    lastCrossoverForPhase = cutFreq;
-                }
-
                 bassEnv[ch].process (bass);
 
                 const float dynEnvelope = dynBassEnv[ch].process (bass);
@@ -487,7 +460,7 @@ void HybridHarmonicEngine::processBlock (juce::AudioBuffer<float>& buffer,
                     envForDyn = dynEnvelope;
                 }
                 const float dynRaw  = dynHarmGain[ch].process (envForDyn, 1.0f);
-                const float dynCtrl = 1.0f + dynamicAmount * (dynRaw - 1.0f);
+                const float dynCtrl = 1.0f + dynAmountData[i] * (dynRaw - 1.0f);
 
                 // Gravar sinais de controle
                 const int ctrlBase = ch * 5;
@@ -509,6 +482,59 @@ void HybridHarmonicEngine::processBlock (juce::AudioBuffer<float>& buffer,
         cachedVocalDetected[ch] = deepVocalProtector[ch].isVocalDetected();
         cachedVocalScore[ch] = deepVocalProtector[ch].getVocalScore();
     }
+
+    // ========================================================================
+    // Atualizar pesos adaptativos depois da análise do bloco atual
+    // ========================================================================
+    if (useDeepVocalProtection)
+    {
+        bool anyVocalDetected = false;
+        float maxVocalScore = 0.0f;
+        int weightSourceCh = 0;
+
+        for (int ch = 0; ch < numCh; ++ch)
+        {
+            if (deepVocalProtector[ch].isVocalDetected())
+            {
+                anyVocalDetected = true;
+                const float score = deepVocalProtector[ch].getVocalScore();
+                if (score > maxVocalScore)
+                {
+                    maxVocalScore = score;
+                    weightSourceCh = ch;
+                }
+            }
+        }
+
+        if (anyVocalDetected)
+        {
+            deepVocalProtector[weightSourceCh].getAdaptiveWeights (
+                h2Weight, h3Weight, h4Weight, h5Weight,
+                h2Weight, h3Weight, h4Weight, h5Weight);
+        }
+    }
+
+    currentWeightAvg = (h2Weight + h3Weight + h4Weight + h5Weight) * 0.25f;
+    harmonicWeightGain = juce::jlimit (0.20f, 3.00f,
+                                       currentWeightAvg / juce::jmax (0.01f, defaultWeightAvg));
+    bassFocusGain = juce::jlimit (0.75f, 3.00f, h2Weight / juce::jmax (0.05f, defaultH2));
+    oddHarshness = juce::jlimit (0.0f, 1.0f,
+                                 (h3Weight + h4Weight + h5Weight)
+                                 / juce::jmax (0.05f, h2Weight + h3Weight + h4Weight + h5Weight));
+    tunedH2Weight = h2Weight * 1.90f;
+    tunedH3Weight = h3Weight * 0.75f;
+    tunedH4Weight = h4Weight * 0.38f;
+    tunedH5Weight = h5Weight * 0.18f;
+
+    toneTargetGain = juce::jlimit (0.10f, 6.00f,
+                                   harmonicWeightGain
+                                   * bassFocusGain
+                                   * spectralWindowGain
+                                   * lowEndFocusGain
+                                   * spectralTiltGain);
+    harmToneSmooth.setTargetValue (toneTargetGain);
+    for (int i = 0; i < N; ++i)
+        toneGainData[i] = harmToneSmooth.getNextValue();
 
     // Copiar baixo limpo
     for (int ch = 0; ch < numCh; ++ch)
@@ -658,7 +684,7 @@ void HybridHarmonicEngine::processBlock (juce::AudioBuffer<float>& buffer,
                     if (hGain < 0.98f)
                     {
                         const float compAmount = (1.0f - hGain) * (freeG - 1.0f);
-                        dynGain += compAmount * dynamicAmount;
+                        dynGain += compAmount * dynAmountData[i];
                     }
                 }
 
@@ -666,17 +692,18 @@ void HybridHarmonicEngine::processBlock (juce::AudioBuffer<float>& buffer,
                 harm *= ctrlKickDuck[i];
 
                 // Clamp de segurança
-                const float absHarm = harm < 0.0f ? -harm : harm;
+                float absHarm = harm < 0.0f ? -harm : harm;
                 if (absHarm > MAX_EFFECTIVE)
                 {
                     harm *= MAX_EFFECTIVE / absHarm;
+                    absHarm = harm < 0.0f ? -harm : harm;
                 }
 
                 // Compressão de harmônicos
                 harm = harm / (1.0f + absHarm * 0.45f);
 
                 // Faz os pesos HE_H2/3/4/5 refletirem no nível final dos harmônicos.
-                harm *= harmToneSmooth.getNextValue();
+                harm *= toneGainData[i];
 
                 const float absHarmOut = harm < 0.0f ? -harm : harm;
                 if (absHarmOut > hPeak) hPeak = absHarmOut;
@@ -688,6 +715,7 @@ void HybridHarmonicEngine::processBlock (juce::AudioBuffer<float>& buffer,
                 const float high = highData[i];
 
                 const float shapedBass = dcBlock[ch].process (bass);
+                subSplit[ch].setSplitFreq (splitFreqData[i], currentSR);
                 const float subPart  = subSplit[ch].getSub  (shapedBass);
                 const float bodyPart = subSplit[ch].getBody (shapedBass);
 

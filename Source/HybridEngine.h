@@ -114,7 +114,7 @@ private:
 
     // Modo de proteção vocal
     bool useDeepVocalProtection = true;
-    float lastCrossoverForPhase = -1.0f;
+    float lastCrossoverForPhase [MAX_CH] = { -1.0f, -1.0f };
 
     // Envelope dedicado para dinâmica
     EnvFollower   dynBassEnv [MAX_CH];

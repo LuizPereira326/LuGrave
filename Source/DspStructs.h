@@ -435,7 +435,7 @@ struct SubBassSplitter
     // Atualiza frequencia de split sem zerar o estado dos filtros
     void setSplitFreq (float newSplitHz, double sampleRate) noexcept
     {
-        if (std::abs (newSplitHz - splitHz) < 0.5f && std::abs (sampleRate - sr) < 0.1)
+        if (std::abs (newSplitHz - splitHz) < 0.01f && std::abs (sampleRate - sr) < 0.1)
             return;
         splitHz = newSplitHz;
         sr = sampleRate;
