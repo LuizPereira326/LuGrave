@@ -86,7 +86,7 @@ void MaxxBassAudioProcessor::loadPresetFromFile (const juce::File& file)
     if (! file.existsAsFile())
         return;
 
-    auto xml = juce::XMLDocument::parse (file);
+    auto xml = juce::parseXML (file);
     if (xml != nullptr && xml->hasTagName (apvts.state.getType()))
     {
         saveStateForUndo();   // Captura ANTES do carregamento
